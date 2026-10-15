@@ -6,84 +6,128 @@
 body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #wrap{position:relative}video{width:100%;display:block}
 #box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
+#s{padding:12px 12px 4px;font-weight:600;font-size:18px}
 #a{padding:0 12px;color:#ff8a80;font-weight:700}
-#s{padding:12px;font-weight:600;font-size:18px}
-button{margin:0 0 10px 12px;padding:10px 14px;font-size:15px}
+#dbg{padding:4px 12px;font:12px ui-monospace,monospace;color:#7d8a82}
+.row{padding:4px 12px 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,select{padding:10px 14px;font-size:15px}
+#zw{display:none}
 #log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad}
 </style></head><body>
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
-<div id="s">Starting...</div><div id="a"></div>
+<div id="s">Starting...</div><div id="a"></div><div id="dbg"></div>
+<div class="row">
 <button id="b">Set display box</button><button id="c">Reset settings</button>
+<select id="res"><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select>
+<label id="zw">Zoom <input id="z" type="range"></label>
+</div>
 <div id="log"></div>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),S=$('s');
-let EP=localStorage.ep,SECRET=localStorage.secret,ROI=JSON.parse(localStorage.roi||'null'),pts=null;
+let EP=localStorage.ep,SECRET=localStorage.secret,pts=null,track=null,aT;
+let ROI=JSON.parse(localStorage.roi||'null');            // display box, stored as fractions of the frame
+if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');} // drop boxes saved by the older version
 if(!EP||!SECRET){EP=prompt('Apps Script web app URL');SECRET=prompt('Secret word');localStorage.ep=EP;localStorage.secret=SECRET;}
 
-// tunable numbers: STILL_DIFF = how steady the display must be, CHANGE_DIFF = how much it must change from the empty scale
-const STILL_DIFF=3,CHANGE_DIFF=8,STILL_TICKS=5,TICK_MS=200;
+// tunable: STILL = how steady the display must look (lower = stricter); MIN_MS/MAX_MS = shortest and longest wait before sending
+const STILL=0.12,TICK_MS=200,MIN_MS=1600,MAX_MS=5000;
+const RES={1080:[1920,1080],1440:[2560,1440],2160:[3840,2160]};
 
-function norm(x){x=x.replace(/[\s()]/g,'').toUpperCase();
- if(/^\d{30,34}$/.test(x)&&x.startsWith('420'))x=x.slice(-22); // USPS label prefix + zip
- return(/^1Z[0-9A-Z]{16}$/.test(x)||/^TBA\d{9,}$/.test(x)||/^\d{12,34}$/.test(x))?x:null;}
+/* ---------- sounds: rising chime = good, low double buzz = problem ---------- */
+let AC;['click','touchend'].forEach(ev=>document.addEventListener(ev,()=>{AC=AC||new AudioContext();AC.resume();}));
+function tone(f,ms,type,when){if(!AC)return;const o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.value=f;g.gain.value=.25;
+ o.connect(g);g.connect(AC.destination);o.start(AC.currentTime+when);o.stop(AC.currentTime+when+ms/1000);}
+const good=()=>{tone(880,120,'sine',0);tone(1320,200,'sine',.14);};
+const bad=()=>{tone(220,260,'square',0);tone(170,380,'square',.32);};
 
+/* ---------- tracking numbers from barcodes and QR codes ---------- */
+function fix(x){return(/^\d{30,34}$/.test(x)&&x.startsWith('420'))?x.slice(-22):x;}
+function extract(raw){const out=[],s=raw.replace(/[\s()]/g,'').toUpperCase();
+ if(/^(1Z[0-9A-Z]{16}|TBA\d{9,}|\d{12,34})$/.test(s))out.push(fix(s));
+ else for(const m of raw.toUpperCase().matchAll(/1Z[0-9A-Z]{16}|TBA\d{9,}|\d{12,34}/g))out.push(fix(m[0]));
+ return out;}
+
+/* ---------- image helpers ---------- */
 const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
 function jpeg(sx,sy,sw,sh,w){const k=w/sw;cv.width=w;cv.height=Math.round(sh*k);
  cx.drawImage(v,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.8).split(',')[1];}
-function sig(){const w=48,h=16;cv.width=w;cv.height=h;cx.drawImage(v,ROI.x,ROI.y,ROI.w,ROI.h,0,0,w,h);
- const d=cx.getImageData(0,0,w,h).data,o=[];for(let i=0;i<d.length;i+=4)o.push((d[i]+d[i+1]+d[i+2])/3);return o;}
+const vw=()=>v.videoWidth,vh=()=>v.videoHeight;
+const crop=()=>jpeg(ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),400);
+function sig(){const w=48,h=16;cv.width=w;cv.height=h;
+ cx.drawImage(v,ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),0,0,w,h);
+ const d=cx.getImageData(0,0,w,h).data,o=[];let m=0;
+ for(let i=0;i<d.length;i+=4){const g=(d[i]+d[i+1]+d[i+2])/3;o.push(g);m+=g;}
+ m/=o.length;let s=0;for(const g of o)s+=(g-m)**2;s=Math.sqrt(s/o.length)||1;
+ return o.map(g=>(g-m)/s);}                                  // normalised, so lighting changes do not count as movement
 function diff(a,b){let s=0;for(let i=0;i<a.length;i++)s+=Math.abs(a[i]-b[i]);return s/a.length;}
 
+/* ---------- camera, zoom, display box ---------- */
+async function cam(){
+ if(v.srcObject)v.srcObject.getTracks().forEach(t=>t.stop());
+ const[w,h]=RES[localStorage.res||'1080'];
+ v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:w},height:{ideal:h}}});
+ await v.play();track=v.srcObject.getVideoTracks()[0];
+ const caps=track.getCapabilities?track.getCapabilities():{};
+ if(caps.focusMode&&caps.focusMode.includes('continuous'))track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
+ if(caps.zoom){const z=$('z');z.min=caps.zoom.min;z.max=caps.zoom.max;z.step=caps.zoom.step||.1;z.value=localStorage.zoom||caps.zoom.min;
+  track.applyConstraints({advanced:[{zoom:+z.value}]}).catch(()=>{});$('zw').style.display='inline';}
+}
+$('res').value=localStorage.res||'1080';
+$('res').onchange=async()=>{localStorage.res=$('res').value;await cam();drawBox();};
+$('z').onchange=()=>{localStorage.zoom=$('z').value;track.applyConstraints({advanced:[{zoom:+$('z').value}]}).catch(()=>{});
+ ROI=null;localStorage.removeItem('roi');drawBox();};      // zoom moves the picture, so the display box must be set again
 function drawBox(){const b=$('box');if(!ROI){b.style.display='none';return;}
- const k=v.getBoundingClientRect().width/v.videoWidth;b.style.display='block';
- b.style.left=ROI.x*k+'px';b.style.top=ROI.y*k+'px';b.style.width=ROI.w*k+'px';b.style.height=ROI.h*k+'px';}
+ const r=v.getBoundingClientRect();b.style.display='block';
+ b.style.left=ROI.x*r.width+'px';b.style.top=ROI.y*r.height+'px';b.style.width=ROI.w*r.width+'px';b.style.height=ROI.h*r.height+'px';}
 $('b').onclick=()=>{pts=[];ROI=null;drawBox();S.textContent='Tap top-left, then bottom-right of the scale display';};
 $('c').onclick=()=>{localStorage.clear();location.reload();};
-v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect(),k=v.videoWidth/r.width;
- pts.push([(e.clientX-r.left)*k,(e.clientY-r.top)*k]);
+v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect();
+ pts.push([(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]);
  if(pts.length==2){const[[x1,y1],[x2,y2]]=pts;
-  ROI={x:Math.min(x1,x2),y:Math.min(y1,y2),w:Math.abs(x2-x1),h:Math.abs(y2-y1)};
-  localStorage.roi=JSON.stringify(ROI);pts=null;drawBox();}};
+  const n={x:Math.min(x1,x2),y:Math.min(y1,y2),w:Math.abs(x2-x1),h:Math.abs(y2-y1)};pts=null;
+  if(n.w<.01||n.h<.01){S.textContent='Box too small - tap "Set display box" and try again';return;}
+  ROI=n;localStorage.roi=JSON.stringify(ROI);drawBox();}};
 
+/* ---------- sending and results ---------- */
 const seen=new Set();
-let AC,aT;document.addEventListener('click',()=>{AC=AC||new AudioContext();AC.resume();});
-function beep(){if(!AC)return;const o=AC.createOscillator();o.frequency.value=880;o.connect(AC.destination);o.start();setTimeout(()=>o.stop(),300);}
-function show(t,r){const d=document.createElement('div'),id=t.slice(-8);
+function show(codes,r){const d=document.createElement('div'),id=codes[0].slice(-8);
  d.textContent=id+'  '+(r.group||r.client||r.label_name||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'');
  $('log').prepend(d);
- if(r.status&&r.status!=='OK'||r.error){d.style.color='#ff8a80';
-  $('a').textContent=r.status==='REVIEW'?'CHECK '+id+': filed under '+r.group+', label says "'+r.label_name+'"':'CHECK '+id+': '+(r.error||r.status+' - not placed or weight unreadable');
-  beep();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',20000);}}
-function send(t,label,display){const body=JSON.stringify({secret:SECRET,tracking:t,label,display});seen.add(t);
- (async function go(n){try{show(t,await(await fetch(EP,{method:'POST',body})).json());}
- catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else show(t,{error:'SEND FAILED - enter by hand'});}})(0);}
+ if(r.status==='OK'){good();return;}
+ d.style.color='#ff8a80';
+ $('a').textContent='CHECK '+id+': '+(r.error||r.note||r.status);
+ bad();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',20000);}
+function send(codes,label,snaps){const body=JSON.stringify({secret:SECRET,codes,label,snaps});codes.forEach(c=>seen.add(c));
+ (async function go(n){try{show(codes,await(await fetch(EP,{method:'POST',body})).json());}
+ catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else show(codes,{error:'SEND FAILED - enter by hand'});}})(0);}
 
+/* ---------- main loop: a new tracking barcode starts a package; no buttons needed ---------- */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
  if(!('BarcodeDetector' in window)){S.textContent='Use Chrome on Android (no barcode support here)';return;}
- v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}}});
- await v.play();try{await navigator.wakeLock.request('screen');}catch{}
+ await cam();try{await navigator.wakeLock.request('screen');}catch{}
  const det=new BarcodeDetector();drawBox();
- let st='idle',base=null,prev=null,still=0,trk=null,label=null,gone=0,since=0;
+ let st='idle',prev=null,still=0,codes=new Set(),label=null,since=0,snaps=[],lastSnap=0;
  while(true){
   await sleep(TICK_MS);
-  if(!ROI){S.textContent='Tap "Set display box" first';base=null;continue;}
-  const cur=sig();let code=null;
-  try{for(const b of await det.detect(v)){const t=norm(b.rawValue);if(t){code=t;break;}}}catch{}
+  if(!ROI){S.textContent='Tap "Set display box" first';prev=null;continue;}
+  const cur=sig();let found=[],raws=[];
+  try{for(const b of await det.detect(v)){raws.push(b.rawValue);extract(b.rawValue).forEach(t=>found.push(t));}}catch{}
+  const fresh=found.filter(t=>!seen.has(t));
+  const d=prev?diff(cur,prev):0;prev=cur;
+  $('dbg').textContent='display movement '+d.toFixed(2)+' (steady when under '+STILL+')';
   if(st=='idle'){
-   if(!base||(!code&&diff(cur,base)<CHANGE_DIFF))base=cur;
-   S.textContent='Ready';
-   if(code&&!seen.has(code)){trk=code;label=jpeg(0,0,v.videoWidth,v.videoHeight,1280);st='weigh';still=0;since=Date.now();}
-  }else if(st=='weigh'){
-   S.textContent='Weighing '+trk;
-   still=(prev&&diff(cur,prev)<STILL_DIFF)?still+1:0;
-   if(still>=STILL_TICKS&&diff(cur,base)>CHANGE_DIFF){
-    send(trk,label,jpeg(ROI.x,ROI.y,ROI.w,ROI.h,400));st='clear';gone=0;S.textContent='Sent '+trk;
-   }else if(Date.now()-since>20000){S.textContent='No stable weight for '+trk+' - enter by hand';seen.add(trk);st='clear';gone=0;}
-  }else if(st=='clear'){
-   if(diff(cur,base)<CHANGE_DIFF&&!code){if(++gone>=5)st='idle';}else gone=0;
+   if(fresh.length){st='weigh';since=Date.now();still=0;snaps=[];lastSnap=0;codes=new Set(fresh);label=jpeg(0,0,vw(),vh(),1280);}
+   else S.textContent=found.length?'Already scanned: '+found[0]:raws.length?'Barcode seen but not a tracking number: '+raws[0].slice(0,30):'Ready';
+  }else{
+   fresh.forEach(t=>codes.add(t));
+   if(fresh.length)label=jpeg(0,0,vw(),vh(),1280);          // keep the newest sharp frame of the label
+   if(Date.now()-lastSnap>=400){snaps.push(crop());snaps=snaps.slice(-3);lastSnap=Date.now();}
+   still=d<STILL?still+1:0;
+   const t=Date.now()-since;
+   S.textContent='Weighing '+[...codes].map(c=>c.slice(-8)).join(' . ');
+   if((t>=MIN_MS&&still>=3)||t>=MAX_MS){send([...codes],label,snaps);st='idle';S.textContent='Sent - next package';}
   }
-  prev=cur;
  }
 }
 main().catch(e=>S.textContent='Error: '+e.message);
