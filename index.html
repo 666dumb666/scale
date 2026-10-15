@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scale intake</title>
+<style>
+body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
+#wrap{position:relative}video{width:100%;display:block}
+#box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
+#a{padding:0 12px;color:#ff8a80;font-weight:700}
+#s{padding:12px;font-weight:600;font-size:18px}
+button{margin:0 0 10px 12px;padding:10px 14px;font-size:15px}
+#log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad}
+</style></head><body>
+<div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
+<div id="s">Starting...</div><div id="a"></div>
+<button id="b">Set display box</button><button id="c">Reset settings</button>
+<div id="log"></div>
+<script>
+const $=id=>document.getElementById(id),v=$('v'),S=$('s');
+let EP=localStorage.ep,SECRET=localStorage.secret,ROI=JSON.parse(localStorage.roi||'null'),pts=null;
+if(!EP||!SECRET){EP=prompt('Apps Script web app URL');SECRET=prompt('Secret word');localStorage.ep=EP;localStorage.secret=SECRET;}
+
+// tunable numbers: STILL_DIFF = how steady the display must be, CHANGE_DIFF = how much it must change from the empty scale
+const STILL_DIFF=3,CHANGE_DIFF=8,STILL_TICKS=5,TICK_MS=200;
+
+function norm(x){x=x.replace(/[\s()]/g,'').toUpperCase();
+ if(/^\d{30,34}$/.test(x)&&x.startsWith('420'))x=x.slice(-22); // USPS label prefix + zip
+ return(/^1Z[0-9A-Z]{16}$/.test(x)||/^TBA\d{9,}$/.test(x)||/^\d{12,34}$/.test(x))?x:null;}
+
+const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+function jpeg(sx,sy,sw,sh,w){const k=w/sw;cv.width=w;cv.height=Math.round(sh*k);
+ cx.drawImage(v,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.8).split(',')[1];}
+function sig(){const w=48,h=16;cv.width=w;cv.height=h;cx.drawImage(v,ROI.x,ROI.y,ROI.w,ROI.h,0,0,w,h);
+ const d=cx.getImageData(0,0,w,h).data,o=[];for(let i=0;i<d.length;i+=4)o.push((d[i]+d[i+1]+d[i+2])/3);return o;}
+function diff(a,b){let s=0;for(let i=0;i<a.length;i++)s+=Math.abs(a[i]-b[i]);return s/a.length;}
+
+function drawBox(){const b=$('box');if(!ROI){b.style.display='none';return;}
+ const k=v.getBoundingClientRect().width/v.videoWidth;b.style.display='block';
+ b.style.left=ROI.x*k+'px';b.style.top=ROI.y*k+'px';b.style.width=ROI.w*k+'px';b.style.height=ROI.h*k+'px';}
+$('b').onclick=()=>{pts=[];ROI=null;drawBox();S.textContent='Tap top-left, then bottom-right of the scale display';};
+$('c').onclick=()=>{localStorage.clear();location.reload();};
+v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect(),k=v.videoWidth/r.width;
+ pts.push([(e.clientX-r.left)*k,(e.clientY-r.top)*k]);
+ if(pts.length==2){const[[x1,y1],[x2,y2]]=pts;
+  ROI={x:Math.min(x1,x2),y:Math.min(y1,y2),w:Math.abs(x2-x1),h:Math.abs(y2-y1)};
+  localStorage.roi=JSON.stringify(ROI);pts=null;drawBox();}};
+
+const seen=new Set();
+let AC,aT;document.addEventListener('click',()=>{AC=AC||new AudioContext();AC.resume();});
+function beep(){if(!AC)return;const o=AC.createOscillator();o.frequency.value=880;o.connect(AC.destination);o.start();setTimeout(()=>o.stop(),300);}
+function show(t,r){const d=document.createElement('div'),id=t.slice(-8);
+ d.textContent=id+'  '+(r.group||r.client||r.label_name||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'');
+ $('log').prepend(d);
+ if(r.status&&r.status!=='OK'||r.error){d.style.color='#ff8a80';
+  $('a').textContent=r.status==='REVIEW'?'CHECK '+id+': filed under '+r.group+', label says "'+r.label_name+'"':'CHECK '+id+': '+(r.error||r.status+' - not placed or weight unreadable');
+  beep();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',20000);}}
+function send(t,label,display){const body=JSON.stringify({secret:SECRET,tracking:t,label,display});seen.add(t);
+ (async function go(n){try{show(t,await(await fetch(EP,{method:'POST',body})).json());}
+ catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else show(t,{error:'SEND FAILED - enter by hand'});}})(0);}
+
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function main(){
+ if(!('BarcodeDetector' in window)){S.textContent='Use Chrome on Android (no barcode support here)';return;}
+ v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}}});
+ await v.play();try{await navigator.wakeLock.request('screen');}catch{}
+ const det=new BarcodeDetector();drawBox();
+ let st='idle',base=null,prev=null,still=0,trk=null,label=null,gone=0,since=0;
+ while(true){
+  await sleep(TICK_MS);
+  if(!ROI){S.textContent='Tap "Set display box" first';base=null;continue;}
+  const cur=sig();let code=null;
+  try{for(const b of await det.detect(v)){const t=norm(b.rawValue);if(t){code=t;break;}}}catch{}
+  if(st=='idle'){
+   if(!base||(!code&&diff(cur,base)<CHANGE_DIFF))base=cur;
+   S.textContent='Ready';
+   if(code&&!seen.has(code)){trk=code;label=jpeg(0,0,v.videoWidth,v.videoHeight,1280);st='weigh';still=0;since=Date.now();}
+  }else if(st=='weigh'){
+   S.textContent='Weighing '+trk;
+   still=(prev&&diff(cur,prev)<STILL_DIFF)?still+1:0;
+   if(still>=STILL_TICKS&&diff(cur,base)>CHANGE_DIFF){
+    send(trk,label,jpeg(ROI.x,ROI.y,ROI.w,ROI.h,400));st='clear';gone=0;S.textContent='Sent '+trk;
+   }else if(Date.now()-since>20000){S.textContent='No stable weight for '+trk+' - enter by hand';seen.add(trk);st='clear';gone=0;}
+  }else if(st=='clear'){
+   if(diff(cur,base)<CHANGE_DIFF&&!code){if(++gone>=5)st='idle';}else gone=0;
+  }
+  prev=cur;
+ }
+}
+main().catch(e=>S.textContent='Error: '+e.message);
+</script></body></html>
