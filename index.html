@@ -6,28 +6,31 @@
 body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #wrap{position:relative}video{width:100%;display:block}
 #box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
-#s{padding:12px 12px 4px;font-weight:600;font-size:18px}
+#s{padding:12px 12px 4px;font-weight:600;font-size:18px;word-break:break-all}
 #a{padding:0 12px;color:#ff8a80;font-weight:700}
-#u{padding:0 12px 6px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
-#dbg{padding:4px 12px;font:12px ui-monospace,monospace;color:#7d8a82}
-.row{padding:4px 12px 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-button,select{padding:10px 14px;font-size:15px}
+#dbg,#u{padding:2px 12px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
+.row{padding:6px 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,select{padding:10px 14px;font-size:15px;max-width:100%}
 #zw{display:none}
-#log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad}
+#log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad;word-break:break-all}
 </style></head><body>
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
 <div id="s">Starting...</div><div id="a"></div><div id="dbg"></div><div id="u"></div>
 <div class="row">
 <button id="b">Set display box</button><button id="t">Test connection</button><button id="c">Reset settings</button>
+</div>
+<div class="row">
+<select id="cam"></select>
 <select id="res"><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select>
+<button id="p"></button>
 <label id="zw">Zoom <input id="z" type="range"></label>
 </div>
 <div id="log"></div>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),S=$('s');
-let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT;
+let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT,PHOTO=localStorage.photo==='1';
 let ROI=JSON.parse(localStorage.roi||'null');            // display box, stored as fractions of the frame
-if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');} // drop boxes saved by the older version
+if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');}
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();localStorage.ep=EP;localStorage.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
 $('u').textContent='Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
@@ -52,10 +55,17 @@ function extract(raw){const out=[],s=raw.replace(/[\s()]/g,'').toUpperCase();
 
 /* ---------- image helpers ---------- */
 const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
-function jpeg(sx,sy,sw,sh,w){const k=w/sw;cv.width=w;cv.height=Math.round(sh*k);
- cx.drawImage(v,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.8).split(',')[1];}
+function jpeg(sx,sy,sw,sh,w,src){src=src||v;const k=w/sw;cv.width=Math.round(w);cv.height=Math.max(1,Math.round(sh*k));
+ cx.drawImage(src,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.85).split(',')[1];}
 const vw=()=>v.videoWidth,vh=()=>v.videoHeight;
 const crop=()=>jpeg(ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),400);
+// close-up of the label area (cut from the full-resolution picture) + a wide view for context
+function labelShots(boxes,src,W,H){
+ if(!boxes.length)return[jpeg(0,0,W,H,Math.min(1568,W),src)];
+ let x1=1e9,y1=1e9,x2=0,y2=0;
+ boxes.forEach(b=>{x1=Math.min(x1,b.x);y1=Math.min(y1,b.y);x2=Math.max(x2,b.x+b.width);y2=Math.max(y2,b.y+b.height);});
+ const pad=1.3*Math.max(x2-x1,y2-y1),sx=Math.max(0,x1-pad),sy=Math.max(0,y1-pad),ex=Math.min(W,x2+pad),ey=Math.min(H,y2+pad);
+ return[jpeg(sx,sy,ex-sx,ey-sy,Math.min(1568,ex-sx),src),jpeg(0,0,W,H,Math.min(1000,W),src)];}
 function sig(){const w=48,h=16;cv.width=w;cv.height=h;
  cx.drawImage(v,ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),0,0,w,h);
  const d=cx.getImageData(0,0,w,h).data,o=[];let m=0;
@@ -64,17 +74,41 @@ function sig(){const w=48,h=16;cv.width=w;cv.height=h;
  return o.map(g=>(g-m)/s);}                                  // normalised, so lighting changes do not count as movement
 function diff(a,b){let s=0;for(let i=0;i<a.length;i++)s+=Math.abs(a[i]-b[i]);return s/a.length;}
 
-/* ---------- camera, zoom, display box ---------- */
+/* ---------- optional: full-resolution photo from the phone camera (sharper label text) ---------- */
+const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
+async function stillShots(det,codes){
+ try{
+  const ic=new ImageCapture(track);let blob;
+  try{const caps=await ic.getPhotoCapabilities(),o={fillLightMode:'off'};
+   if(caps.imageWidth&&caps.imageHeight){const W=Math.min(caps.imageWidth.max,4000);o.imageWidth=W;o.imageHeight=Math.round(W*caps.imageHeight.max/caps.imageWidth.max);}
+   blob=await withTimeout(ic.takePhoto(o),5000);}
+  catch(e){blob=await withTimeout(ic.takePhoto(),5000);}
+  const bmp=await createImageBitmap(blob),boxes=[];
+  for(const b of await det.detect(bmp)){if(extract(b.rawValue).some(t=>codes.has(t)))boxes.push(b.boundingBox);}
+  if(!boxes.length)return null;                              // could not find the label in the photo: use the video picture instead
+  return labelShots(boxes,bmp,bmp.width,bmp.height);
+ }catch(e){return null;}}
+function paintP(){$('p').textContent='Photo mode: '+(PHOTO?'ON':'off');}
+$('p').onclick=()=>{PHOTO=!PHOTO;localStorage.photo=PHOTO?'1':'0';paintP();};paintP();
+
+/* ---------- camera, lens, zoom, display box ---------- */
 async function cam(){
  if(v.srcObject)v.srcObject.getTracks().forEach(t=>t.stop());
- const[w,h]=RES[localStorage.res||'1080'];
- v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:w},height:{ideal:h}}});
- await v.play();track=v.srcObject.getVideoTracks()[0];
+ const[w,h]=RES[localStorage.res||'1080'],base={width:{ideal:w},height:{ideal:h}};
+ let stream;
+ try{stream=await navigator.mediaDevices.getUserMedia({video:localStorage.camId?{...base,deviceId:{exact:localStorage.camId}}:{...base,facingMode:'environment'}});}
+ catch(e){localStorage.removeItem('camId');stream=await navigator.mediaDevices.getUserMedia({video:{...base,facingMode:'environment'}});}
+ v.srcObject=stream;await v.play();track=stream.getVideoTracks()[0];
  const caps=track.getCapabilities?track.getCapabilities():{};
  if(caps.focusMode&&caps.focusMode.includes('continuous'))track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
  if(caps.zoom){const z=$('z');z.min=caps.zoom.min;z.max=caps.zoom.max;z.step=caps.zoom.step||.1;z.value=localStorage.zoom||caps.zoom.min;
   track.applyConstraints({advanced:[{zoom:+z.value}]}).catch(()=>{});$('zw').style.display='inline';}
+ else $('zw').style.display='none';
+ const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput'),sel=$('cam');sel.innerHTML='';
+ devs.forEach((d,i)=>{const o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||('Camera '+(i+1));sel.appendChild(o);});
+ sel.value=track.getSettings().deviceId||'';
 }
+$('cam').onchange=async()=>{localStorage.camId=$('cam').value;localStorage.removeItem('zoom');ROI=null;localStorage.removeItem('roi');await cam();drawBox();};
 $('res').value=localStorage.res||'1080';
 $('res').onchange=async()=>{localStorage.res=$('res').value;await cam();drawBox();};
 $('z').onchange=()=>{localStorage.zoom=$('z').value;track.applyConstraints({advanced:[{zoom:+$('z').value}]}).catch(()=>{});
@@ -93,14 +127,14 @@ v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect();
 
 /* ---------- sending and results ---------- */
 const seen=new Set();
-function show(codes,r){const d=document.createElement('div'),id=codes[0].slice(-8);
+function show(codes,r){const d=document.createElement('div'),id=codes.join(' . ');
  d.textContent=id+'  '+(r.group||r.client||r.label_name||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'');
  $('log').prepend(d);
  if(r.status==='OK'){good();return;}
  d.style.color='#ff8a80';
  $('a').textContent='CHECK '+id+': '+(r.error||r.note||r.status);
- bad();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',20000);}
-function send(codes,label,snaps){const body=JSON.stringify({secret:SECRET,codes,label,snaps});codes.forEach(c=>seen.add(c));
+ bad();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',30000);}
+function send(codes,labels,snaps){const body=JSON.stringify({secret:SECRET,codes,labels,snaps});codes.forEach(c=>seen.add(c));
  (async function go(n){try{const r=await(await fetch(EP,{method:'POST',body})).json();if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
  catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
 // one-tap check that the page can reach your Google script and the secret matches
@@ -124,22 +158,27 @@ async function main(){
  while(true){
   await sleep(TICK_MS);
   if(!ROI){S.textContent='Tap "Set display box" first';prev=null;continue;}
-  const cur=sig();let found=[],raws=[];
-  try{for(const b of await det.detect(v)){raws.push(b.rawValue);extract(b.rawValue).forEach(t=>found.push(t));}}catch{}
+  const cur=sig();let found=[],raws=[],boxes=[];
+  try{for(const b of await det.detect(v)){raws.push(b.rawValue);
+   for(const t of extract(b.rawValue)){found.push(t);if(!seen.has(t))boxes.push(b.boundingBox);}}}catch{}
   const fresh=found.filter(t=>!seen.has(t));
   const d=prev?diff(cur,prev):0;prev=cur;
   $('dbg').textContent='display movement '+d.toFixed(2)+' (steady when under '+STILL+')';
   if(st=='idle'){
-   if(fresh.length){st='weigh';since=Date.now();still=0;snaps=[];lastSnap=0;codes=new Set(fresh);label=jpeg(0,0,vw(),vh(),1280);}
+   if(fresh.length){st='weigh';since=Date.now();still=0;snaps=[];lastSnap=0;codes=new Set(fresh);label=labelShots(boxes,v,vw(),vh());}
    else S.textContent=found.length?'Already scanned: '+found[0]:raws.length?'Barcode seen but not a tracking number: '+raws[0].slice(0,30):'Ready';
   }else{
    fresh.forEach(t=>codes.add(t));
-   if(fresh.length)label=jpeg(0,0,vw(),vh(),1280);          // keep the newest sharp frame of the label
+   if(fresh.length)label=labelShots(boxes,v,vw(),vh());     // keep the newest sharp frame of the label
    if(Date.now()-lastSnap>=400){snaps.push(crop());snaps=snaps.slice(-3);lastSnap=Date.now();}
    still=d<STILL?still+1:0;
    const t=Date.now()-since;
-   S.textContent='Weighing '+[...codes].map(c=>c.slice(-8)).join(' . ');
-   if((t>=MIN_MS&&still>=3)||t>=MAX_MS){send([...codes],label,snaps);st='idle';S.textContent='Sent - next package';}
+   S.textContent='Weighing '+[...codes].join(' . ');
+   if((t>=MIN_MS&&still>=3)||t>=MAX_MS){
+    S.textContent='Capturing label...';
+    let shots=label;if(PHOTO){const s=await stillShots(det,codes);if(s)shots=s;}
+    send([...codes],shots,snaps);st='idle';S.textContent='Sent - next package';
+   }
   }
  }
 }
