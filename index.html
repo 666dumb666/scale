@@ -10,6 +10,7 @@ body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #pgbar{position:absolute;left:0;top:0;bottom:0;width:0;transition:width .15s linear}
 #pgtxt{position:relative;text-align:center;line-height:58px;font-size:17px;font-weight:800;padding:0 8px;white-space:nowrap;overflow:hidden}
 #cf{display:none;margin:8px 12px;padding:10px;border-radius:10px;background:#5a4a00;color:#fff}#cft{font-weight:700;word-break:break-all}#cf input{padding:8px;font-size:15px}
+#sp{padding:0 12px;font-weight:700;color:#9fc9ad}
 #a{padding:2px 12px;color:#ff8a80;font-weight:700;word-break:break-all}
 #dbg,#u{padding:2px 12px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
 .row{padding:5px 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -22,7 +23,7 @@ button,select{padding:10px 14px;font-size:15px;max-width:100%}
 <div id="pg"><div id="pgbar"></div><div id="pgtxt">Starting...</div></div>
 <div id="cf"><div id="cft"></div><div class="row"><label>Tracking <input id="cfT" size="24"></label><label>Weight <input id="cfW" size="5" inputmode="decimal"></label></div><div class="row"><button id="cfy">Confirm</button><button id="cfn">Leave flagged</button></div></div>
 <div id="a"></div><div id="dbg"></div><div id="u"></div>
-<div class="row"><button id="pz">Pause</button><button id="go">Capture now</button></div>
+<div id="sp"></div><div class="row"><button id="md"></button><button id="pz">Pause</button><button id="go">Capture now</button></div>
 <div class="row"><button id="b">1. Set display box</button><button id="ar">2. Set scale area</button><button id="z0">Set empty</button></div>
 <div class="row"><button id="t">Test connection</button><button id="c">Reset settings</button><button id="p"></button></div>
 <div class="row"><select id="cam"></select><select id="res"><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select><label id="zw">Zoom <input id="z" type="range"></label></div>
@@ -32,15 +33,15 @@ const $=id=>document.getElementById(id),v=$('v'),LS=localStorage,sleep=ms=>new P
 let EP=(LS.ep||'').trim(),SECRET=(LS.secret||'').trim();
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();LS.ep=EP;LS.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
-$('u').textContent='Page v16 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
+$('u').textContent='Page v17 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
 const J=k=>JSON.parse(LS[k]||'null');
-let ROI=J('roi'),AREA=J('area'),EMPTY=J('empty'),PHOTO=LS.photo!=='0',track=null,pick=null,pts=[],force=false,pending=null,halt='',junk=0,aT;
+let ROI=J('roi'),AREA=J('area'),EMPTY=J('empty'),PHOTO=LS.photo!=='0',AUTO=LS.auto==='1',done=0,track=null,pick=null,pts=[],force=false,pending=null,halt='',junk=0,aT;
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;LS.removeItem('roi');}
 
 /* ---- tunable numbers ---- */
-const TICK=200,SETTLE_MS=2000,SETTLE_MAX=4500,MIN_GAP=4000,MAX_RUNS=8;   // captured after sitting still for SETTLE_MS (SETTLE_MAX if no barcode could be read yet)
+const TICK=200,SETTLE_MS=2000,SETTLE_MAX=4500,MIN_GAP=4000,MAX_RUNS=6;   // captured after sitting still for SETTLE_MS (SETTLE_MAX if no barcode could be read yet)
 const WHOLE=/^(1Z[0-9A-Z]{16}|TBA\d{9,}|\d{12,34})$/i;
-const ON=14,OFF=8,MOVE=4,CHANGE=18;                      // scale-area difference (grey levels): package present / gone / still moving / a different package
+const ON=14,OFF=8,MOVE=4;                                // scale-area difference (grey levels): package present / gone / still moving
 const RES={1080:[1920,1080],1440:[2560,1440],2160:[3840,2160]};
 const GREY='#3a424b',AMBER='#b8860b',GREEN='#1f8f4e',RED='#8a2f2f';
 
@@ -53,16 +54,17 @@ function note(msg,ms){const a=$('a');a.textContent=msg;clearTimeout(aT);aT=setTi
 function setHalt(msg){halt=msg;$('pz').textContent=msg?'Resume':'Pause';if(msg)bad();}
 
 /* ---- what the loop does next (free of camera code so it can be tested alone) ---- */
-function step(s,now,present,calm,forced,chg,haveCode){
+function step(s,now,present,calm,forced,haveCode,auto){
  s.emptyTicks=present?0:s.emptyTicks+1;
- if(s.emptyTicks>=2)s.armed=true;                                                  // armed again once the scale area has been empty
- if(!s.armed&&present&&s.capGrid&&chg>CHANGE){s.armed=true;s.capGrid=null;s.since=0;}   // a different package put down without the scale ever being empty
- s.since=present&&calm?(s.since||now):0;                                           // since when the package has been on the scale and still
- const settle=s.since?now-s.since:0;
- if(s.armed&&now-s.lastCap>MIN_GAP&&(settle>=(haveCode?SETTLE_MS:SETTLE_MAX)||forced)){s.armed=false;s.lastCap=now;return{act:'capture'};}   // no barcode read yet: allow extra time to read one
- if(!s.armed)return{text:present?(now-s.lastCap>30000?'STILL SEES SOMETHING ON THE SCALE - if empty, tap "Set empty"':'CAPTURED - take it off the scale'):'Scale clearing...',pct:100,color:GREEN};
+ if(s.emptyTicks>=5)s.armed=true;           // armed ONLY after the scale area has been seen empty for 1 s (also before the very first capture)
+ s.since=present&&calm?(s.since||now):0;    // since when the package has been on the scale and still
+ const settle=s.since?now-s.since:0,need=haveCode?SETTLE_MS:SETTLE_MAX;
+ if(!auto){                                  // MANUAL mode: only the Capture now button captures
+  if(forced&&now-s.lastCap>MIN_GAP){s.lastCap=now;return{act:'capture'};}
+  return{text:'MANUAL - put the package on the scale, then tap "Capture now"',pct:0,color:GREY};}
+ if(s.armed&&now-s.lastCap>MIN_GAP&&(settle>=need||forced)){s.armed=false;s.lastCap=now;return{act:'capture'};}
+ if(!s.armed)return{text:present?(now-s.lastCap>30000?'STILL SEES SOMETHING ON THE SCALE - if it is empty, tap "Set empty"':'CAPTURED - take it off the scale'):'Scale clearing...',pct:100,color:GREEN};
  if(!present)return{text:'READY - put a package on the scale, label up',pct:0,color:GREY};
- const need=haveCode?SETTLE_MS:SETTLE_MAX;
  return{text:calm?'PACKAGE ON SCALE - '+(haveCode?'barcode OK - ':'reading barcode - ')+'capturing in '+Math.max(0,(need-settle)/1000).toFixed(1)+'s':'Package moving...',pct:Math.min(100,settle/need*100),color:calm?GREEN:AMBER};}
 
 /* ---- pictures ---- */
@@ -136,6 +138,8 @@ v.onclick=e=>{if(!pick)return;const r=v.getBoundingClientRect();pts.push([(e.cli
  if(n.w<.01||n.h<.01)return note('Box too small - tap the button and try again');
  if(kind==='roi'){ROI=n;LS.roi=JSON.stringify(n);}else{AREA=n;LS.area=JSON.stringify(n);setEmpty();}   // the empty platform is saved at the same moment
  drawBoxes();};
+$('md').onclick=()=>{AUTO=!AUTO;LS.auto=AUTO?'1':'0';paintM();};
+const paintM=()=>$('md').textContent='Mode: '+(AUTO?'AUTO (tap for MANUAL)':'MANUAL (tap for AUTO)');paintM();
 $('p').onclick=()=>{PHOTO=!PHOTO;LS.photo=PHOTO?'1':'0';paintP();};
 const paintP=()=>$('p').textContent='Photo mode: '+(PHOTO?'ON':'off');paintP();
 
@@ -145,7 +149,10 @@ async function post(body){const txt=await(await fetch(EP,{method:'POST',body})).
 function show(r){const d=document.createElement('div');
  d.textContent=(r.tracking||'-')+'  '+(r.group||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'')+(typeof r.cost==='number'?'  | '+r.tokens+' tokens, $'+r.cost.toFixed(4)+' (today $'+r.today.toFixed(3)+')':'');
  $('log').prepend(d);
- if(!r.tracking&&!r.label_name){if(++junk>=3)setHalt('STOPPED: 3 captures in a row read nothing. Check the camera view and the boxes, then tap Resume');}else junk=0;   // protects the budget if something is wrong
+ done++;if(typeof r.today==='number')$('sp').textContent='AI spent today: $'+r.today.toFixed(3)+(r.limit?' of $'+r.limit.toFixed(2)+' limit':'')+' | results this session: '+done;
+ if(/PAUSED/.test(r.error||''))setHalt('PAUSED from the Settings tab. Set B1 to ON, then tap Resume');
+ else if(r.status==='OK'||r.status==='REVIEW')junk=0;
+ else if(++junk>=3)setHalt('STOPPED: 3 problems in a row. Look at the red lines, then tap Resume');   // protects the budget if something is wrong
  if(r.status==='OK')return good();
  d.style.color='#ff8a80';note((r.status==='EMPTY'?'NOTHING READ: ':'CHECK '+(r.tracking||'')+': ')+(r.error||r.note||r.status),30000);
  if(r.status==='REVIEW'&&r.tracking){pending=r.tracking;$('cft').textContent='CHECK THE LABEL, FIX IF NEEDED, THEN CONFIRM: '+r.group+' ('+(r.client||r.label_name||'?')+') | '+r.note;$('cfT').value=r.tracking;$('cfW').value=r.raw??'';$('cf').style.display='block';}
@@ -167,7 +174,9 @@ $('t').onclick=async()=>{note('Testing...',30000);
 async function main(){
  if(!('BarcodeDetector' in window)){setProg('Use Chrome on Android',0,RED);return;}
  await cam();try{await navigator.wakeLock.request('screen');}catch{}
- const det=new BarcodeDetector(),s={armed:true,emptyTicks:2,since:0,lastCap:0,capGrid:null};let on=false,prev=null,ring=[],lastSnap=0,runs=[],vraws=new Set();drawBoxes();
+ const det=new BarcodeDetector(),s={armed:false,emptyTicks:0,since:0,lastCap:0};let on=false,prev=null,ring=[],lastSnap=0,runs=[],vraws=new Set();drawBoxes();
+ const gather=async()=>{try{for(const b of await det.detect(v)){const r=b.boundingBox,mx=(r.x+r.width/2)/vw(),my=(r.y+r.height/2)/vh();   // only barcodes lying on the scale area belong to this package
+  if(mx>=AREA.x&&mx<=AREA.x+AREA.w&&my>=AREA.y&&my<=AREA.y+AREA.h)vraws.add(String(b.rawValue).slice(0,300));}}catch(e){}};
  for(;;){
   await sleep(TICK);const now=Date.now();
   if(!ROI){setProg('1. SET THE DISPLAY BOX (scale empty)',0,RED);continue;}
@@ -178,21 +187,20 @@ async function main(){
   $('dbg').textContent='scale area vs empty: '+pd.toFixed(1)+' ('+(on?'SOMETHING ON THE SCALE':'empty')+', needs over '+ON+') | movement '+mv.toFixed(1);
   if(halt){setProg(halt,0,RED);force=false;continue;}
   if(!on&&s.emptyTicks>=2)vraws.clear();
-  if(on&&s.armed)try{for(const b of await det.detect(v)){const r=b.boundingBox,mx=(r.x+r.width/2)/vw(),my=(r.y+r.height/2)/vh();   // only barcodes lying on the scale area belong to this package
-   if(mx>=AREA.x&&mx<=AREA.x+AREA.w&&my>=AREA.y&&my<=AREA.y+AREA.h)vraws.add(String(b.rawValue).slice(0,300));}}catch(e){}
+  if(on&&(s.armed||!AUTO))await gather();                                      // barcodes are read only while something is on the scale
   const have=[...vraws].some(x=>WHOLE.test(x.replace(/\s/g,'')));
   const f=force;force=false;
-  const a=step(s,now,on,mv<MOVE,f,s.capGrid?meanAbs(g,s.capGrid):0,have);
-  if(f&&a.act!=='capture')note('Take the previous package off the scale first');
+  const a=step(s,now,on,mv<MOVE,f,have,AUTO);
+  if(f&&a.act!=='capture')note(AUTO?'Take the previous package off the scale first':'Wait a few seconds between captures');
   if(a.act!=='capture'){setProg(a.text,a.pct,a.color);continue;}
   runs=runs.filter(t=>now-t<60000);runs.push(now);
   if(runs.length>MAX_RUNS){setHalt('STOPPED: too many captures in one minute. Tap Resume when ready');continue;}
   const snaps=ring.slice();
   setProg('TAKING THE PICTURE - keep it still',100,AMBER);
+  await gather();
   let r=PHOTO?await photo(det):null;
   if(r)await restoreCam();else{const sc=await scan(det,v);r={labels:labelShots(v,vw(),vh(),sc.boxes,false),photo:sc.raws,hires:false};}
-  r.raws=[...vraws];vraws.clear();
-  s.capGrid=grid(AREA);prev=null;                                              // how the scale area looks now, to notice a different package later
+  r.raws=[...vraws];vraws.clear();prev=null;
   ready();send(r,snaps);
  }
 }
