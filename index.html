@@ -5,10 +5,10 @@
 <style>
 body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #wrap{position:relative}video{width:100%;display:block}
-#box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
+.bx{position:absolute;pointer-events:none;display:none}#box{border:2px solid #3ddc84}#area{border:2px solid #4aa3ff}
 #pg{position:relative;margin:8px 12px;height:58px;border-radius:10px;background:#2a2f35;overflow:hidden}
 #pgbar{position:absolute;left:0;top:0;bottom:0;width:0;transition:width .15s linear}
-#pgtxt{position:relative;text-align:center;line-height:58px;font-size:18px;font-weight:800;padding:0 8px;white-space:nowrap;overflow:hidden}
+#pgtxt{position:relative;text-align:center;line-height:58px;font-size:17px;font-weight:800;padding:0 8px;white-space:nowrap;overflow:hidden}
 #cf{display:none;margin:8px 12px;padding:10px;border-radius:10px;background:#5a4a00;color:#fff}#cft{font-weight:700;word-break:break-all}
 #a{padding:2px 12px;color:#ff8a80;font-weight:700;word-break:break-all}
 #dbg,#u{padding:2px 12px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
@@ -18,11 +18,12 @@ button,select{padding:10px 14px;font-size:15px;max-width:100%}
 #log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad;word-break:break-all}
 #th{padding:6px 12px}#th img{width:48%;margin:1%;border:1px solid #444;vertical-align:top}
 </style></head><body>
-<div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
+<div id="wrap"><video id="v" playsinline muted></video><div id="box" class="bx"></div><div id="area" class="bx"></div></div>
 <div id="pg"><div id="pgbar"></div><div id="pgtxt">Starting...</div></div>
 <div id="cf"><div id="cft"></div><div class="row"><button id="cfy">Confirm</button><button id="cfn">Leave flagged</button></div></div>
 <div id="a"></div><div id="dbg"></div><div id="u"></div>
-<div class="row"><button id="b">Set display box</button><button id="z0">Set zero</button><button id="go">Capture now</button></div>
+<div class="row"><button id="pz">Pause</button><button id="go">Capture now</button></div>
+<div class="row"><button id="b">1. Set display box</button><button id="ar">2. Set scale area</button><button id="z0">Set empty</button></div>
 <div class="row"><button id="t">Test connection</button><button id="c">Reset settings</button><button id="p"></button></div>
 <div class="row"><select id="cam"></select><select id="res"><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select><label id="zw">Zoom <input id="z" type="range"></label></div>
 <div id="log"></div><div id="th"></div>
@@ -31,12 +32,14 @@ const $=id=>document.getElementById(id),v=$('v'),LS=localStorage,sleep=ms=>new P
 let EP=(LS.ep||'').trim(),SECRET=(LS.secret||'').trim();
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();LS.ep=EP;LS.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
-$('u').textContent='Page v14 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
-let ROI=JSON.parse(LS.roi||'null'),ZERO=JSON.parse(LS.zero||'null'),PHOTO=LS.photo!=='0',track=null,pts=null,force=false,pending=null,aT;
+$('u').textContent='Page v15 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
+const J=k=>JSON.parse(LS[k]||'null');
+let ROI=J('roi'),AREA=J('area'),EMPTY=J('empty'),PHOTO=LS.photo!=='0',track=null,pick=null,pts=[],force=false,pending=null,halt='',junk=0,aT;
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;LS.removeItem('roi');}
 
 /* ---- tunable numbers ---- */
-const TICK=200,SETTLE_MS=2000,ZERO_DIFF=0.18,MIN_GAP=4000,CHANGE=0.3;   // a package is captured when a weight has been on the scale SETTLE_MS
+const TICK=200,SETTLE_MS=2000,MIN_GAP=4000,MAX_RUNS=8;   // a package is captured after it has sat still on the scale for SETTLE_MS
+const ON=14,OFF=8,MOVE=4,CHANGE=18;                      // scale-area difference (grey levels): package present / gone / still moving / a different package
 const RES={1080:[1920,1080],1440:[2560,1440],2160:[3840,2160]};
 const GREY='#3a424b',AMBER='#b8860b',GREEN='#1f8f4e',RED='#8a2f2f';
 
@@ -46,27 +49,28 @@ function tone(f,ms,type,at){if(!AC)return;const o=AC.createOscillator(),g=AC.cre
 const ready=()=>tone(1000,170,'sine',0),good=()=>{tone(880,120,'sine',0);tone(1320,200,'sine',.14);},bad=()=>{tone(220,260,'square',0);tone(170,380,'square',.32);};
 function setProg(text,pct,color){$('pgtxt').textContent=text;const b=$('pgbar');b.style.width=pct+'%';b.style.background=color;}
 function note(msg,ms){const a=$('a');a.textContent=msg;clearTimeout(aT);aT=setTimeout(()=>a.textContent='',ms||8000);}
+function setHalt(msg){halt=msg;$('pz').textContent=msg?'Resume':'Pause';if(msg)bad();}
 
-/* ---- what the loop does next (kept free of camera code so it can be tested alone) ---- */
-function step(s,now,nz,forced,chg){
- s.nzSince=nz?(s.nzSince||now):0;s.zeroTicks=nz?0:s.zeroTicks+1;
- if(s.zeroTicks>=2)s.armed=true;                                            // armed again once the scale has been empty
- if(!s.armed&&nz&&s.capSig&&chg>CHANGE){s.armed=true;s.nzSince=now;s.capSig=null;}   // a different weight appeared without the scale ever reading zero
- const settle=nz?now-s.nzSince:0;
+/* ---- what the loop does next (free of camera code so it can be tested alone) ---- */
+function step(s,now,present,calm,forced,chg){
+ s.emptyTicks=present?0:s.emptyTicks+1;
+ if(s.emptyTicks>=2)s.armed=true;                                                  // armed again once the scale area has been empty
+ if(!s.armed&&present&&s.capGrid&&chg>CHANGE){s.armed=true;s.capGrid=null;s.since=0;}   // a different package put down without the scale ever being empty
+ s.since=present&&calm?(s.since||now):0;                                           // since when the package has been on the scale and still
+ const settle=s.since?now-s.since:0;
  if(s.armed&&now-s.lastCap>MIN_GAP&&(settle>=SETTLE_MS||forced)){s.armed=false;s.lastCap=now;return{act:'capture'};}
- if(!s.armed)return{text:nz?'CAPTURED - take it off the scale':'Scale clearing...',pct:100,color:GREEN};
- if(!nz)return{text:'READY - put a package on the scale, label up',pct:0,color:GREY};
- return{text:'WEIGHT ON SCALE - capturing in '+Math.max(0,(SETTLE_MS-settle)/1000).toFixed(1)+'s',pct:Math.min(100,settle/SETTLE_MS*100),color:GREEN};}
+ if(!s.armed)return{text:present?(now-s.lastCap>30000?'STILL SEES SOMETHING ON THE SCALE - if empty, tap "Set empty"':'CAPTURED - take it off the scale'):'Scale clearing...',pct:100,color:GREEN};
+ if(!present)return{text:'READY - put a package on the scale, label up',pct:0,color:GREY};
+ return{text:calm?'PACKAGE ON SCALE - capturing in '+Math.max(0,(SETTLE_MS-settle)/1000).toFixed(1)+'s':'Package moving...',pct:Math.min(100,settle/SETTLE_MS*100),color:calm?GREEN:AMBER};}
 
 /* ---- pictures ---- */
-const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});cx.imageSmoothingQuality='high';
 function jpeg(src,sx,sy,sw,sh,w){cv.width=Math.round(w);cv.height=Math.max(1,Math.round(sh*w/sw));cx.drawImage(src,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.85).split(',')[1];}
 const vw=()=>v.videoWidth,vh=()=>v.videoHeight;
 const crop=()=>jpeg(v,ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),600);
-function sig(){const w=48,h=16;cv.width=w;cv.height=h;cx.drawImage(v,ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),0,0,w,h);
- const d=cx.getImageData(0,0,w,h).data,o=[];let m=0;for(let i=0;i<d.length;i+=4){const g=(d[i]+d[i+1]+d[i+2])/3;o.push(g);m+=g;}
- m/=o.length;let s=0;for(const g of o)s+=(g-m)**2;s=Math.sqrt(s/o.length)||1;return o.map(g=>(g-m)/s);}   // normalised: lighting changes do not count
-const diff=(a,b)=>a.reduce((s,x,i)=>s+Math.abs(x-b[i]),0)/a.length;
+function grid(b){const n=32;cv.width=n;cv.height=n;cx.drawImage(v,b.x*vw(),b.y*vh(),b.w*vw(),b.h*vh(),0,0,n,n);   // 32x32 grey picture of a box, brightness removed
+ const d=cx.getImageData(0,0,n,n).data,o=[];let m=0;for(let i=0;i<d.length;i+=4){const g=(d[i]+d[i+1]+d[i+2])/3;o.push(g);m+=g;}m/=o.length;return o.map(g=>g-m);}
+const meanAbs=(a,b)=>a.reduce((s,x,i)=>s+Math.abs(x-b[i]),0)/a.length;
 const isTrack=raw=>/1Z[0-9A-Z]{16}|TBA\d{9,}|\d{12,34}/i.test(raw.replace(/\s/g,''));
 async function scan(det,src){const raws=[],boxes=[];for(const b of await det.detect(src)){raws.push(String(b.rawValue).slice(0,300));if(isTrack(b.rawValue))boxes.push(b.boundingBox);}return{raws,boxes};}
 function cluster(bs){if(!bs.length)return bs;const area=b=>b.width*b.height,p=bs.reduce((a,b)=>area(b)>area(a)?b:a),r=3*Math.max(p.width,p.height);   // the biggest tracking barcode and its neighbours = the label on the scale
@@ -83,12 +87,12 @@ async function photo(det){   // full-resolution photo from the phone camera: far
   const bmp=await createImageBitmap(blob),s=await scan(det,bmp);
   return{labels:labelShots(bmp,bmp.width,bmp.height,s.boxes,true),raws:s.raws,hires:true};}
  catch(e){return null;}}
-async function restoreCam(){   // taking a photo can reset the preview: put zoom back before the next package
- if(!track||track.readyState!=='live')return cam();
- if(LS.zoom)await track.applyConstraints({advanced:[{zoom:+LS.zoom}]}).catch(()=>{});
- await sleep(400);}
+async function restoreCam(){   // taking a photo can reset the preview: put zoom back and let it settle
+ if(!track||track.readyState!=='live')await cam();
+ else if(LS.zoom)await track.applyConstraints({advanced:[{zoom:+LS.zoom}]}).catch(()=>{});
+ await sleep(800);}
 
-/* ---- camera, display box, zero ---- */
+/* ---- camera and setup boxes ---- */
 async function cam(){
  if(v.srcObject)v.srcObject.getTracks().forEach(t=>t.stop());
  const[w,h]=RES[LS.res||'1080'],base={width:{ideal:w},height:{ideal:h}};
@@ -103,19 +107,24 @@ async function cam(){
  const sel=$('cam');sel.innerHTML='';
  (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput').forEach((d,i)=>{const o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||'Camera '+(i+1);sel.appendChild(o);});
  sel.value=track.getSettings().deviceId||'';}
-function clearView(){ROI=ZERO=null;LS.removeItem('roi');LS.removeItem('zero');drawBox();}   // a new lens or zoom moves the picture
+function clearView(){ROI=AREA=EMPTY=null;['roi','area','empty'].forEach(k=>LS.removeItem(k));drawBoxes();}   // a new lens or zoom moves the picture
 $('cam').onchange=async()=>{LS.camId=$('cam').value;LS.removeItem('zoom');await cam();clearView();};
-$('res').value=LS.res||'1080';$('res').onchange=async()=>{LS.res=$('res').value;await cam();drawBox();};
+$('res').value=LS.res||'1080';$('res').onchange=async()=>{LS.res=$('res').value;await cam();drawBoxes();};
 $('z').onchange=()=>{LS.zoom=$('z').value;track.applyConstraints({advanced:[{zoom:+$('z').value}]}).catch(()=>{});clearView();};
-function drawBox(){const b=$('box');if(!ROI){b.style.display='none';return;}const r=v.getBoundingClientRect();b.style.display='block';
- b.style.left=ROI.x*r.width+'px';b.style.top=ROI.y*r.height+'px';b.style.width=ROI.w*r.width+'px';b.style.height=ROI.h*r.height+'px';}
-function setZero(){if(!ROI)return note('Set the display box first');ZERO=sig();LS.zero=JSON.stringify(ZERO.map(x=>Math.round(x*100)/100));note('Zero saved: the scale should be empty and showing zero');}
-$('z0').onclick=setZero;$('go').onclick=()=>{force=true;};$('c').onclick=()=>{LS.clear();location.reload();};
-$('b').onclick=()=>{pts=[];ROI=null;drawBox();note('Scale EMPTY? Tap the top-left, then the bottom-right corner of the scale display',20000);};
-v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect();pts.push([(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]);
- if(pts.length<2)return;const[[x1,y1],[x2,y2]]=pts,n={x:Math.min(x1,x2),y:Math.min(y1,y2),w:Math.abs(x2-x1),h:Math.abs(y2-y1)};pts=null;
- if(n.w<.01||n.h<.01)return note('Box too small - tap "Set display box" and try again');
- ROI=n;LS.roi=JSON.stringify(ROI);drawBox();setZero();};   // the empty scale is saved as "zero" at the same moment
+function drawBoxes(){const r=v.getBoundingClientRect();[['box',ROI],['area',AREA]].forEach(([id,b])=>{const e=$(id);if(!b){e.style.display='none';return;}
+ e.style.display='block';e.style.left=b.x*r.width+'px';e.style.top=b.y*r.height+'px';e.style.width=b.w*r.width+'px';e.style.height=b.h*r.height+'px';});}
+function setEmpty(){if(!AREA)return note('Set the scale area first');EMPTY=grid(AREA);LS.empty=JSON.stringify(EMPTY.map(x=>Math.round(x*10)/10));note('Empty scale saved: the scale must be empty right now');}
+function startPick(kind,msg){pick=kind;pts=[];if(kind==='roi')ROI=null;else AREA=EMPTY=null;drawBoxes();note(msg,20000);}
+$('b').onclick=()=>startPick('roi','Scale EMPTY? Tap the top-left, then the bottom-right corner of the digits on the scale display (green box)');
+$('ar').onclick=()=>startPick('area','Scale EMPTY? Tap the top-left, then the bottom-right corner of the weighing platform (blue box)');
+$('z0').onclick=setEmpty;$('go').onclick=()=>{force=true;};$('c').onclick=()=>{LS.clear();location.reload();};
+$('pz').onclick=()=>setHalt(halt?'':'PAUSED - tap Resume');
+$('pz').addEventListener('click',()=>{junk=0;});
+v.onclick=e=>{if(!pick)return;const r=v.getBoundingClientRect();pts.push([(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]);
+ if(pts.length<2)return;const[[x1,y1],[x2,y2]]=pts,n={x:Math.min(x1,x2),y:Math.min(y1,y2),w:Math.abs(x2-x1),h:Math.abs(y2-y1)},kind=pick;pick=null;
+ if(n.w<.01||n.h<.01)return note('Box too small - tap the button and try again');
+ if(kind==='roi'){ROI=n;LS.roi=JSON.stringify(n);}else{AREA=n;LS.area=JSON.stringify(n);setEmpty();}   // the empty platform is saved at the same moment
+ drawBoxes();};
 $('p').onclick=()=>{PHOTO=!PHOTO;LS.photo=PHOTO?'1':'0';paintP();};
 const paintP=()=>$('p').textContent='Photo mode: '+(PHOTO?'ON':'off');paintP();
 
@@ -125,10 +134,11 @@ async function post(body){const txt=await(await fetch(EP,{method:'POST',body})).
 function show(r){const d=document.createElement('div');
  d.textContent=(r.tracking||'-')+'  '+(r.group||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'')+(typeof r.cost==='number'?'  | '+r.tokens+' tokens, $'+r.cost.toFixed(4)+' (today $'+r.today.toFixed(3)+')':'');
  $('log').prepend(d);
+ if(!r.tracking&&!r.label_name){if(++junk>=3)setHalt('STOPPED: 3 captures in a row read nothing. Check the camera view and the boxes, then tap Resume');}else junk=0;   // protects the budget if something is wrong
  if(r.status==='OK')return good();
- d.style.color='#ff8a80';note('CHECK '+(r.tracking||'')+': '+(r.error||r.note||r.status),30000);
+ d.style.color='#ff8a80';note((r.status==='EMPTY'?'NOTHING READ: ':'CHECK '+(r.tracking||'')+': ')+(r.error||r.note||r.status),30000);
  if(r.status==='REVIEW'&&r.tracking){pending=r.tracking;$('cft').textContent='CONFIRM? '+r.tracking+' | '+r.group+' ('+(r.client||r.label_name||'?')+') | '+r.weight+' | '+r.note;$('cf').style.display='block';}
- bad();}
+ if(!halt)bad();}
 function send(r,snaps){const t=$('th');t.innerHTML='';r.labels.concat(snaps.slice(-1)).forEach(b=>{const i=new Image();i.src='data:image/jpeg;base64,'+b;t.appendChild(i);});   // the pictures the AI receives
  const body=JSON.stringify({secret:SECRET,labels:r.labels,snaps,raws:r.raws.slice(0,12),hires:r.hires});
  (async function go(n){try{show(await post(body));}catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else show({error:'SEND FAILED ('+e.message+') - weigh it again'});}})(0);}
@@ -142,26 +152,31 @@ $('t').onclick=async()=>{note('Testing...',30000);
  try{const r=await post(JSON.stringify({secret:SECRET,ping:true}));if(r.error){note('Script reached, but: '+r.error,30000);bad();}else{note('Connected OK - URL and secret are correct',30000);good();}}
  catch(e){note((String(e.message).startsWith('Google sent')?e.message+' | URL damaged or old: copy it again from Deploy > Manage deployments':'Cannot reach the script ('+e.message+'): check the URL, "Anyone" access and the connection'),30000);bad();}};
 
-/* ---- main loop: a weight on the scale for 2 s = a package; no barcode needed to start ---- */
+/* ---- main loop: a package that has sat still on the scale for 2 s is captured; barcodes are not needed to start ---- */
 async function main(){
  if(!('BarcodeDetector' in window)){setProg('Use Chrome on Android',0,RED);return;}
  await cam();try{await navigator.wakeLock.request('screen');}catch{}
- const det=new BarcodeDetector(),s={armed:true,nzSince:0,zeroTicks:0,lastCap:0};let nzOn=false,ring=[],lastSnap=0;drawBox();
+ const det=new BarcodeDetector(),s={armed:true,emptyTicks:2,since:0,lastCap:0,capGrid:null};let on=false,prev=null,ring=[],lastSnap=0,runs=[];drawBoxes();
  for(;;){
   await sleep(TICK);const now=Date.now();
-  if(!ROI||!ZERO){setProg(!ROI?'SET THE DISPLAY BOX FIRST (scale empty)':'EMPTY THE SCALE, THEN TAP "SET ZERO"',0,RED);continue;}
-  const cur=sig(),dz=diff(cur,ZERO);
-  if(!nzOn&&dz>ZERO_DIFF)nzOn=true;else if(nzOn&&dz<ZERO_DIFF*.6)nzOn=false;   // hysteresis: no flapping near the threshold
+  if(!ROI){setProg('1. SET THE DISPLAY BOX (scale empty)',0,RED);continue;}
+  if(!AREA||!EMPTY){setProg('2. SET THE SCALE AREA (scale empty)',0,RED);continue;}
+  const g=grid(AREA),pd=meanAbs(g,EMPTY),mv=prev?meanAbs(g,prev):0;prev=g;
+  if(!on&&pd>ON)on=true;else if(on&&pd<OFF)on=false;                          // hysteresis: no flapping near the limit
   if(now-lastSnap>=400){ring.push(crop());ring=ring.slice(-5);lastSnap=now;}   // always keep the 5 latest pictures of the display
-  $('dbg').textContent='display vs empty scale: '+dz.toFixed(2)+' ('+(nzOn?'ABOVE ZERO':'zero')+', needs over '+ZERO_DIFF+')';
+  $('dbg').textContent='scale area vs empty: '+pd.toFixed(1)+' ('+(on?'SOMETHING ON THE SCALE':'empty')+', needs over '+ON+') | movement '+mv.toFixed(1);
+  if(halt){setProg(halt,0,RED);force=false;continue;}
   const f=force;force=false;
-  const a=step(s,now,nzOn,f,s.capSig?diff(cur,s.capSig):0);
+  const a=step(s,now,on,mv<MOVE,f,s.capGrid?meanAbs(g,s.capGrid):0);
   if(f&&a.act!=='capture')note('Take the previous package off the scale first');
   if(a.act!=='capture'){setProg(a.text,a.pct,a.color);continue;}
-  const snaps=ring.slice();s.capSig=cur;   // remember how the display looked, to notice a different package
+  runs=runs.filter(t=>now-t<60000);runs.push(now);
+  if(runs.length>MAX_RUNS){setHalt('STOPPED: too many captures in one minute. Tap Resume when ready');continue;}
+  const snaps=ring.slice();
   setProg('TAKING THE PICTURE - keep it still',100,AMBER);
   let r=PHOTO?await photo(det):null;
   if(r)await restoreCam();else{const sc=await scan(det,v);r={labels:labelShots(v,vw(),vh(),sc.boxes,false),raws:sc.raws,hires:false};}
+  s.capGrid=grid(AREA);prev=null;                                              // how the scale area looks now, to notice a different package later
   ready();send(r,snaps);
  }
 }
