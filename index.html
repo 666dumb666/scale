@@ -6,20 +6,26 @@
 body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #wrap{position:relative}video{width:100%;display:block}
 #box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
-#cue{display:none;margin:8px 12px;padding:14px;border-radius:10px;font-size:22px;font-weight:800;text-align:center;background:#1f8f4e;color:#fff}
-#s{padding:12px 12px 4px;font-weight:600;font-size:18px;word-break:break-all}
+#pg{position:relative;margin:8px 12px;height:58px;border-radius:10px;background:#2a2f35;overflow:hidden}
+#pgbar{position:absolute;left:0;top:0;bottom:0;width:0;background:#3a424b;transition:width .15s linear}
+#pgtxt{position:relative;text-align:center;line-height:58px;font-size:19px;font-weight:800;padding:0 8px;white-space:nowrap;overflow:hidden}
+#s{padding:4px 12px;font-weight:600;font-size:15px;word-break:break-all}
 #a{padding:0 12px;color:#ff8a80;font-weight:700}
 #dbg,#u{padding:2px 12px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
 .row{padding:6px 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 button,select{padding:10px 14px;font-size:15px;max-width:100%}
 #zw{display:none}
-#th{padding:6px 12px}#th img{width:48%;margin:1%;border:1px solid #444;vertical-align:top}
 #log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad;word-break:break-all}
+#th{padding:6px 12px}#th img{width:48%;margin:1%;border:1px solid #444;vertical-align:top}
 </style></head><body>
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
-<div id="cue"></div><div id="s">Starting...</div><div id="a"></div><div id="dbg"></div><div id="u"></div>
+<div id="pg"><div id="pgbar"></div><div id="pgtxt">Starting...</div></div>
+<div id="s"></div><div id="a"></div><div id="dbg"></div><div id="u"></div>
 <div class="row">
-<button id="b">Set display box</button><button id="t">Test connection</button><button id="c">Reset settings</button>
+<button id="b">Set display box</button><button id="z0">Set zero</button><button id="go">Send now</button>
+</div>
+<div class="row">
+<button id="t">Test connection</button><button id="c">Reset settings</button>
 </div>
 <div class="row">
 <select id="cam"></select>
@@ -30,46 +36,47 @@ button,select{padding:10px 14px;font-size:15px;max-width:100%}
 <div id="log"></div><div id="th"></div>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),S=$('s');
-let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT,PHOTO=localStorage.photo==='1';
-let ROI=JSON.parse(localStorage.roi||'null');            // display box, stored as fractions of the frame
+let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT,PHOTO=localStorage.photo==='1',forceSend=false;
+let ROI=JSON.parse(localStorage.roi||'null'),ZERO=JSON.parse(localStorage.zero||'null');
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');}
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();localStorage.ep=EP;localStorage.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
-$('u').textContent='Page v10 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
+$('u').textContent='Page v11 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
 
-// tunable numbers (STILL = how steady the display must look; lower = stricter)
-const STILL=0.12,TICK_MS=200;
-const CHANGE=0.25;        // how different the display must look from the moment the barcode was read, to count as "a package was put down"
-const MIN_MS=1500;        // shortest wait after the barcode before sending
-const FALLBACK_MS=5000;   // display never changed since the barcode: assume the package was already resting on the scale
-const MAX_MS=20000;       // send anyway after this long
-const CUE_WORD='Now weigh';   // spoken when the barcode is read
+/* ---- tunable numbers ---- */
+const STILL=0.12;          // display counts as "not changing" when its movement is under this
+const TICK_MS=200;
+const HOLD_MS=2000;        // weight must be above zero and unchanged this long, then it is captured
+const FORCE_MS=8000;       // display unchanged this long after the barcode but still looks like zero: capture anyway
+const MAX_MS=30000;        // capture anyway this long after the barcode
+const ZERO_DIFF=0.18;      // how different the display must look from the empty-scale picture to count as "above zero"
 const RES={1080:[1920,1080],1440:[2560,1440],2160:[3840,2160]};
 
-/* ---------- sounds: rising chime = good, low double buzz = problem ---------- */
+/* ---- sounds: tick = captured (you can lift it), rising chime = saved OK, low buzz = problem ---- */
 let AC;['click','touchend'].forEach(ev=>document.addEventListener(ev,()=>{AC=AC||new AudioContext();AC.resume();}));
 function tone(f,ms,type,when){if(!AC)return;const o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.value=f;g.gain.value=.25;
  o.connect(g);g.connect(AC.destination);o.start(AC.currentTime+when);o.stop(AC.currentTime+when+ms/1000);}
+const ready=()=>{tone(1000,170,'sine',0);};
 const good=()=>{tone(880,120,'sine',0);tone(1320,200,'sine',.14);};
 const bad=()=>{tone(220,260,'square',0);tone(170,380,'square',.32);};
-function cue(){tone(740,110,'triangle',0);   // short tick, then the spoken word
- try{if('speechSynthesis' in window){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(CUE_WORD);u.lang='en-US';u.rate=1.2;speechSynthesis.speak(u);}}catch(e){}}
-function showCue(on){const c=$('cue');c.style.display=on?'block':'none';if(on)c.textContent='BARCODE OK - SET IT ON THE SCALE';}
 
-/* ---------- tracking numbers from barcodes and QR codes ---------- */
+/* ---- status bar ---- */
+function setProg(text,pct,color){$('pgtxt').textContent=text;const b=$('pgbar');b.style.width=Math.max(0,Math.min(100,pct))+'%';b.style.background=color;}
+const GREY='#3a424b',AMBER='#b8860b',GREEN='#1f8f4e',RED='#8a2f2f';
+
+/* ---- tracking numbers from barcodes and QR codes ---- */
 function fix(x){return(/^\d{30,34}$/.test(x)&&x.startsWith('420'))?x.slice(-22):x;}
 function extract(raw){const out=[],s=raw.replace(/[\s()]/g,'').toUpperCase();
  if(/^(1Z[0-9A-Z]{16}|TBA\d{9,}|\d{12,34})$/.test(s))out.push(fix(s));
  else for(const m of raw.toUpperCase().matchAll(/1Z[0-9A-Z]{16}|TBA\d{9,}|\d{12,34}/g))out.push(fix(m[0]));
  return out;}
 
-/* ---------- image helpers ---------- */
+/* ---- image helpers ---- */
 const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
 function jpeg(sx,sy,sw,sh,w,src){src=src||v;const k=w/sw;cv.width=Math.round(w);cv.height=Math.max(1,Math.round(sh*k));
  cx.drawImage(src,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.85).split(',')[1];}
 const vw=()=>v.videoWidth,vh=()=>v.videoHeight;
 const crop=()=>jpeg(ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),600);
-// close-up of the label area (cut from the full-resolution picture) + a wide view for context
 function labelShots(boxes,src,W,H){
  if(!boxes.length)return[jpeg(0,0,W,H,Math.min(1568,W),src)];
  let x1=1e9,y1=1e9,x2=0,y2=0;
@@ -84,7 +91,7 @@ function sig(){const w=48,h=16;cv.width=w;cv.height=h;
  return o.map(g=>(g-m)/s);}                                  // normalised, so lighting changes do not count as movement
 function diff(a,b){let s=0;for(let i=0;i<a.length;i++)s+=Math.abs(a[i]-b[i]);return s/a.length;}
 
-/* ---------- optional: full-resolution photo from the phone camera (sharper label text) ---------- */
+/* ---- optional full-resolution photo ---- */
 const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
 async function stillShots(det,codes){
  try{
@@ -95,13 +102,13 @@ async function stillShots(det,codes){
   catch(e){blob=await withTimeout(ic.takePhoto(),5000);}
   const bmp=await createImageBitmap(blob),boxes=[];
   for(const b of await det.detect(bmp)){if(extract(b.rawValue).some(t=>codes.has(t)))boxes.push(b.boundingBox);}
-  if(!boxes.length)return null;                              // could not find the label in the photo: use the video picture instead
+  if(!boxes.length)return null;
   return labelShots(boxes,bmp,bmp.width,bmp.height);
  }catch(e){return null;}}
 function paintP(){$('p').textContent='Photo mode: '+(PHOTO?'ON':'off');}
 $('p').onclick=()=>{PHOTO=!PHOTO;localStorage.photo=PHOTO?'1':'0';paintP();};paintP();
 
-/* ---------- camera, lens, zoom, display box ---------- */
+/* ---- camera, lens, zoom, display box, zero ---- */
 async function cam(){
  if(v.srcObject)v.srcObject.getTracks().forEach(t=>t.stop());
  const[w,h]=RES[localStorage.res||'1080'],base={width:{ideal:w},height:{ideal:h}};
@@ -118,87 +125,98 @@ async function cam(){
  devs.forEach((d,i)=>{const o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||('Camera '+(i+1));sel.appendChild(o);});
  sel.value=track.getSettings().deviceId||'';
 }
-$('cam').onchange=async()=>{localStorage.camId=$('cam').value;localStorage.removeItem('zoom');ROI=null;localStorage.removeItem('roi');await cam();drawBox();};
+function clearView(){ROI=null;ZERO=null;localStorage.removeItem('roi');localStorage.removeItem('zero');drawBox();}   // a new lens or zoom moves the picture
+$('cam').onchange=async()=>{localStorage.camId=$('cam').value;localStorage.removeItem('zoom');await cam();clearView();};
 $('res').value=localStorage.res||'1080';
 $('res').onchange=async()=>{localStorage.res=$('res').value;await cam();drawBox();};
-$('z').onchange=()=>{localStorage.zoom=$('z').value;track.applyConstraints({advanced:[{zoom:+$('z').value}]}).catch(()=>{});
- ROI=null;localStorage.removeItem('roi');drawBox();};      // zoom moves the picture, so the display box must be set again
+$('z').onchange=()=>{localStorage.zoom=$('z').value;track.applyConstraints({advanced:[{zoom:+$('z').value}]}).catch(()=>{});clearView();};
 function drawBox(){const b=$('box');if(!ROI){b.style.display='none';return;}
  const r=v.getBoundingClientRect();b.style.display='block';
  b.style.left=ROI.x*r.width+'px';b.style.top=ROI.y*r.height+'px';b.style.width=ROI.w*r.width+'px';b.style.height=ROI.h*r.height+'px';}
-$('b').onclick=()=>{pts=[];ROI=null;drawBox();S.textContent='Tap top-left, then bottom-right of the scale display';};
+function note(msg,ms){const a=$('a');a.textContent=msg;clearTimeout(aT);aT=setTimeout(()=>a.textContent='',ms||6000);}
+function setZero(){if(!ROI){note('Set the display box first');return;}
+ ZERO=sig();localStorage.zero=JSON.stringify(ZERO.map(x=>Math.round(x*100)/100));note('Zero saved: the scale should be empty and showing zero');}
+$('z0').onclick=setZero;
+$('go').onclick=()=>{forceSend=true;};
+$('b').onclick=()=>{pts=[];ROI=null;drawBox();S.textContent='Scale EMPTY? Tap top-left, then bottom-right of the scale display';};
 $('c').onclick=()=>{localStorage.clear();location.reload();};
 v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect();
  pts.push([(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]);
  if(pts.length==2){const[[x1,y1],[x2,y2]]=pts;
   const n={x:Math.min(x1,x2),y:Math.min(y1,y2),w:Math.abs(x2-x1),h:Math.abs(y2-y1)};pts=null;
   if(n.w<.01||n.h<.01){S.textContent='Box too small - tap "Set display box" and try again';return;}
-  ROI=n;localStorage.roi=JSON.stringify(ROI);drawBox();}};
+  ROI=n;localStorage.roi=JSON.stringify(ROI);drawBox();setZero();}};   // the empty scale is saved as "zero" at the same moment
 
-/* ---------- sending and results ---------- */
+/* ---- sending and results ---- */
 const seen=new Set();
+function showThumbs(labels,snaps){const t=$('th');t.innerHTML='';
+ labels.concat(snaps.slice(-1)).forEach(b=>{const i=new Image();i.src='data:image/jpeg;base64,'+b;t.appendChild(i);});}
 function show(codes,r){const d=document.createElement('div'),id=r.tracking||codes.join(' . ');
  d.textContent=id+'  '+(r.group||r.client||r.label_name||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'')+(typeof r.cost==='number'?'  | '+r.tokens+' tokens, $'+r.cost.toFixed(4)+' (today $'+r.today.toFixed(3)+')':'');
  $('log').prepend(d);
  if(r.status==='OK'){good();return;}
  d.style.color='#ff8a80';
- $('a').textContent='CHECK '+id+': '+(r.error||r.note||r.status);
- bad();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',30000);}
-function showThumbs(labels,snaps){const t=$('th');t.innerHTML='';
- labels.concat(snaps.slice(-1)).forEach(b=>{const i=new Image();i.src='data:image/jpeg;base64,'+b;t.appendChild(i);});}   // the pictures the AI receives
+ note('CHECK '+id+': '+(r.error||r.note||r.status),30000);
+ bad();}
 async function post(body){const resp=await fetch(EP,{method:'POST',body}),txt=await resp.text();
  try{return JSON.parse(txt);}
  catch(e){throw new Error('Google sent a web page instead of data: '+txt.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160));}}
 function send(codes,labels,snaps,raws){showThumbs(labels,snaps);const body=JSON.stringify({secret:SECRET,codes,labels,snaps,raws:[...raws].slice(0,12).map(x=>String(x).slice(0,300))});codes.forEach(c=>seen.add(c));
  (async function go(n){try{const r=await post(body);if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
  catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
-// one-tap check that the page can reach your Google script and the secret matches
-$('t').onclick=async()=>{const a=$('a');a.textContent='Testing...';
- if(!URL_OK){a.textContent='The saved URL is not a web app URL (see the grey line below). Tap Reset settings and paste the /exec URL';bad();return;}
+$('t').onclick=async()=>{note('Testing...',30000);
+ if(!URL_OK){note('The saved URL is not a web app URL (see the grey line below). Tap Reset settings and paste the /exec URL',30000);bad();return;}
  try{const r=await post(JSON.stringify({secret:SECRET,ping:true}));
-  if(r.error){a.textContent='Script reached, but: '+r.error;bad();}else{a.textContent='Connected OK - URL and secret are correct';good();}}
+  if(r.error){note('Script reached, but: '+r.error,30000);bad();}else{note('Connected OK - URL and secret are correct',30000);good();}}
  catch(e){let m;
   if(String(e.message).startsWith('Google sent a web page')){m=e.message+' | The URL is probably damaged, old, or from the wrong deployment: copy it again from Deploy > Manage deployments';}
   else{try{await fetch(EP,{mode:'no-cors'});m='Google answered but would not share the reply: access is not set to Anyone, or this is not the right deployment URL ('+e.message+')';}
    catch(_){m='Cannot reach script.google.com at all: check the URL spelling, the connection, VPN or ad blocker ('+e.message+')';}}
-  a.textContent=m;bad();}
- clearTimeout(aT);aT=setTimeout(()=>a.textContent='',30000);};
+  note(m,30000);bad();}};
 
-/* ---------- main loop: a new tracking barcode starts a package; no buttons needed ---------- */
+/* ---- main loop: a tracking barcode starts a package; the weight is captured once it is above zero and unchanged for 2 s ---- */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
  if(!('BarcodeDetector' in window)){S.textContent='Use Chrome on Android (no barcode support here)';return;}
  await cam();try{await navigator.wakeLock.request('screen');}catch{}
  const det=new BarcodeDetector();drawBox();
- let st='idle',prev=null,ref=null,still=0,codes=new Set(),allRaws=new Set(),label=null,since=0,snaps=[],lastSnap=0;
+ let st='idle',prev=null,lastT=Date.now(),stillMs=0,codes=new Set(),allRaws=new Set(),label=null,since=0,ring=[],lastSnap=0,heldUntil=0;
  while(true){
   await sleep(TICK_MS);
-  if(!ROI){S.textContent='Tap "Set display box" first';prev=null;continue;}
+  const now=Date.now(),dt=now-lastT;lastT=now;
+  if(!ROI){setProg('SET THE DISPLAY BOX FIRST (scale empty)',0,RED);S.textContent='';prev=null;continue;}
+  if(!ZERO){setProg('EMPTY THE SCALE, THEN TAP "SET ZERO"',0,RED);S.textContent='';prev=null;continue;}
   const cur=sig();let found=[],raws=[],boxes=[];
   try{for(const b of await det.detect(v)){raws.push(b.rawValue);
    for(const t of extract(b.rawValue)){found.push(t);if(!seen.has(t))boxes.push(b.boundingBox);}}}catch{}
   const fresh=found.filter(t=>!seen.has(t));
   const d=prev?diff(cur,prev):0;prev=cur;
+  stillMs=d<STILL?stillMs+dt:0;
+  const dz=diff(cur,ZERO),nz=dz>ZERO_DIFF;
+  if(now-lastSnap>=400){ring.push(crop());ring=ring.slice(-3);lastSnap=now;}   // always keep the 3 latest pictures of the display
+  if(st=='idle'&&fresh.length){st='weigh';since=now;codes=new Set(fresh);allRaws=new Set(raws);label=labelShots(boxes,v,vw(),vh());forceSend=false;}
+  else if(st=='weigh'){fresh.forEach(t=>codes.add(t));raws.forEach(x=>allRaws.add(x));if(fresh.length)label=labelShots(boxes,v,vw(),vh());}
   if(st=='idle'){
-   $('dbg').textContent='display movement '+d.toFixed(2)+' (steady when under '+STILL+')';
-   if(fresh.length){st='weigh';since=Date.now();still=0;ref=cur;snaps=[];lastSnap=0;codes=new Set(fresh);allRaws=new Set(raws);
-    label=labelShots(boxes,v,vw(),vh());cue();showCue(true);}
-   else S.textContent=found.length?'Already scanned: '+found[0]:raws.length?'Barcode seen but not a tracking number: '+raws[0].slice(0,30):'Ready';
+   S.textContent=found.length?'Already scanned: '+found[0]:raws.length?'Barcode seen but not a tracking number: '+raws[0].slice(0,30):'';
+   $('dbg').textContent='display movement '+d.toFixed(2)+' | vs zero '+dz.toFixed(2)+' (above zero when over '+ZERO_DIFF+')';
+   if(now>heldUntil)setProg('READY - show the barcode',0,GREY);
+   if(forceSend){forceSend=false;note('No barcode read yet');}
   }else{
-   fresh.forEach(t=>codes.add(t));raws.forEach(x=>allRaws.add(x));
-   if(fresh.length)label=labelShots(boxes,v,vw(),vh());     // keep the newest sharp frame of the label
-   if(Date.now()-lastSnap>=400){snaps.push(crop());snaps=snaps.slice(-3);lastSnap=Date.now();}
-   still=d<STILL?still+1:0;
-   const t=Date.now()-since,chg=diff(cur,ref),changed=chg>CHANGE;
-   $('dbg').textContent='display movement '+d.toFixed(2)+' | change since barcode '+chg.toFixed(2)+' (needs over '+CHANGE+') | '+(t/1000).toFixed(1)+'s';
+   const t=now-since;
    S.textContent='Barcode read: '+[...codes].join(' . ');
-   if((changed&&still>=3&&t>=MIN_MS)||(!changed&&t>=FALLBACK_MS)||t>=MAX_MS){
-    showCue(false);S.textContent='Capturing label...';
+   $('dbg').textContent='movement '+d.toFixed(2)+' | vs zero '+dz.toFixed(2)+' (above zero when over '+ZERO_DIFF+') | steady '+(stillMs/1000).toFixed(1)+'s | '+(t/1000).toFixed(0)+'s since barcode';
+   const go=(stillMs>=HOLD_MS&&nz)||forceSend||Math.min(stillMs,t)>=FORCE_MS||t>=MAX_MS;
+   if(!go){
+    if(!nz)setProg('BARCODE OK - waiting for a weight on the scale',0,AMBER);
+    else if(stillMs>0)setProg('HOLD STILL... '+Math.max(0,(HOLD_MS-stillMs)/1000).toFixed(1)+'s',stillMs/HOLD_MS*100,GREEN);
+    else setProg('Weight changing...',0,AMBER);
+   }else{
+    forceSend=false;ready();setProg('CAPTURED - you can lift it',100,GREEN);heldUntil=now+2500;
     let shots=label;if(PHOTO){const s=await stillShots(det,codes);if(s)shots=s;}
-    send([...codes],shots,snaps,allRaws);st='idle';S.textContent='Sent - next package';
+    send([...codes],shots,ring.slice(),allRaws);st='idle';S.textContent='Saving...';
    }
   }
  }
 }
-main().catch(e=>S.textContent='Error: '+e.message);
+main().catch(e=>{setProg('Error: '+e.message,0,RED);});
 </script></body></html>
