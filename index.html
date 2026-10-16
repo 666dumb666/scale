@@ -34,7 +34,7 @@ let ROI=JSON.parse(localStorage.roi||'null');            // display box, stored 
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');}
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();localStorage.ep=EP;localStorage.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
-$('u').textContent='Page v7 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
+$('u').textContent='Page v8 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
 
 // tunable: STILL = how steady the display must look (lower = stricter); MIN_MS/MAX_MS = shortest and longest wait before sending
 const STILL=0.12,TICK_MS=200,MIN_MS=1600,MAX_MS=5000;
@@ -137,18 +137,22 @@ function show(codes,r){const d=document.createElement('div'),id=codes.join(' . '
  bad();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',30000);}
 function showThumbs(labels,snaps){const t=$('th');t.innerHTML='';
  labels.concat(snaps.slice(-1)).forEach(b=>{const i=new Image();i.src='data:image/jpeg;base64,'+b;t.appendChild(i);});}   // the pictures the AI receives
+async function post(body){const resp=await fetch(EP,{method:'POST',body}),txt=await resp.text();
+ try{return JSON.parse(txt);}
+ catch(e){throw new Error('Google sent a web page instead of data: '+txt.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160));}}
 function send(codes,labels,snaps){showThumbs(labels,snaps);const body=JSON.stringify({secret:SECRET,codes,labels,snaps});codes.forEach(c=>seen.add(c));
- (async function go(n){try{const r=await(await fetch(EP,{method:'POST',body})).json();if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
+ (async function go(n){try{const r=await post(body);if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
  catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
 // one-tap check that the page can reach your Google script and the secret matches
 $('t').onclick=async()=>{const a=$('a');a.textContent='Testing...';
  if(!URL_OK){a.textContent='The saved URL is not a web app URL (see the grey line below). Tap Reset settings and paste the /exec URL';bad();return;}
- try{const r=await(await fetch(EP,{method:'POST',body:JSON.stringify({secret:SECRET,ping:true})})).json();
+ try{const r=await post(JSON.stringify({secret:SECRET,ping:true}));
   if(r.error){a.textContent='Script reached, but: '+r.error;bad();}else{a.textContent='Connected OK - URL and secret are correct';good();}}
  catch(e){let m;
-  try{await fetch(EP,{mode:'no-cors'});m='Google answered but would not share the reply: access is not set to Anyone, or this is not the right deployment URL';}
-  catch(_){m='Cannot reach script.google.com at all: check the URL spelling, the connection, VPN or ad blocker';}
-  a.textContent=m+' ('+e.message+')';bad();}
+  if(String(e.message).startsWith('Google sent a web page')){m=e.message+' | The URL is probably damaged, old, or from the wrong deployment: copy it again from Deploy > Manage deployments';}
+  else{try{await fetch(EP,{mode:'no-cors'});m='Google answered but would not share the reply: access is not set to Anyone, or this is not the right deployment URL ('+e.message+')';}
+   catch(_){m='Cannot reach script.google.com at all: check the URL spelling, the connection, VPN or ad blocker ('+e.message+')';}}
+  a.textContent=m;bad();}
  clearTimeout(aT);aT=setTimeout(()=>a.textContent='',30000);};
 
 /* ---------- main loop: a new tracking barcode starts a package; no buttons needed ---------- */
