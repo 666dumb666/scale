@@ -8,6 +8,7 @@ body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
 #s{padding:12px 12px 4px;font-weight:600;font-size:18px}
 #a{padding:0 12px;color:#ff8a80;font-weight:700}
+#u{padding:0 12px 6px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
 #dbg{padding:4px 12px;font:12px ui-monospace,monospace;color:#7d8a82}
 .row{padding:4px 12px 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 button,select{padding:10px 14px;font-size:15px}
@@ -15,7 +16,7 @@ button,select{padding:10px 14px;font-size:15px}
 #log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad}
 </style></head><body>
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
-<div id="s">Starting...</div><div id="a"></div><div id="dbg"></div>
+<div id="s">Starting...</div><div id="a"></div><div id="dbg"></div><div id="u"></div>
 <div class="row">
 <button id="b">Set display box</button><button id="t">Test connection</button><button id="c">Reset settings</button>
 <select id="res"><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select>
@@ -24,10 +25,12 @@ button,select{padding:10px 14px;font-size:15px}
 <div id="log"></div>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),S=$('s');
-let EP=localStorage.ep,SECRET=localStorage.secret,pts=null,track=null,aT;
+let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT;
 let ROI=JSON.parse(localStorage.roi||'null');            // display box, stored as fractions of the frame
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');} // drop boxes saved by the older version
-if(!EP||!SECRET){EP=prompt('Apps Script web app URL');SECRET=prompt('Secret word');localStorage.ep=EP;localStorage.secret=SECRET;}
+if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();localStorage.ep=EP;localStorage.secret=SECRET;}
+const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
+$('u').textContent='Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
 
 // tunable: STILL = how steady the display must look (lower = stricter); MIN_MS/MAX_MS = shortest and longest wait before sending
 const STILL=0.12,TICK_MS=200,MIN_MS=1600,MAX_MS=5000;
@@ -102,10 +105,14 @@ function send(codes,label,snaps){const body=JSON.stringify({secret:SECRET,codes,
  catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
 // one-tap check that the page can reach your Google script and the secret matches
 $('t').onclick=async()=>{const a=$('a');a.textContent='Testing...';
+ if(!URL_OK){a.textContent='The saved URL is not a web app URL (see the grey line below). Tap Reset settings and paste the /exec URL';bad();return;}
  try{const r=await(await fetch(EP,{method:'POST',body:JSON.stringify({secret:SECRET,ping:true})})).json();
   if(r.error){a.textContent='Script reached, but: '+r.error;bad();}else{a.textContent='Connected OK - URL and secret are correct';good();}}
- catch(e){a.textContent='Cannot reach the script ('+e.message+') - check the URL and that access is set to Anyone';bad();}
- clearTimeout(aT);aT=setTimeout(()=>a.textContent='',20000);};
+ catch(e){let m;
+  try{await fetch(EP,{mode:'no-cors'});m='Google answered but would not share the reply: access is not set to Anyone, or this is not the right deployment URL';}
+  catch(_){m='Cannot reach script.google.com at all: check the URL spelling, the connection, VPN or ad blocker';}
+  a.textContent=m+' ('+e.message+')';bad();}
+ clearTimeout(aT);aT=setTimeout(()=>a.textContent='',30000);};
 
 /* ---------- main loop: a new tracking barcode starts a package; no buttons needed ---------- */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
