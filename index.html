@@ -6,6 +6,7 @@
 body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #wrap{position:relative}video{width:100%;display:block}
 #box{position:absolute;border:2px solid #3ddc84;pointer-events:none;display:none}
+#cue{display:none;margin:8px 12px;padding:14px;border-radius:10px;font-size:22px;font-weight:800;text-align:center;background:#1f8f4e;color:#fff}
 #s{padding:12px 12px 4px;font-weight:600;font-size:18px;word-break:break-all}
 #a{padding:0 12px;color:#ff8a80;font-weight:700}
 #dbg,#u{padding:2px 12px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
@@ -16,7 +17,7 @@ button,select{padding:10px 14px;font-size:15px;max-width:100%}
 #log div{padding:3px 12px;font:13px ui-monospace,monospace;color:#9fc9ad;word-break:break-all}
 </style></head><body>
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
-<div id="s">Starting...</div><div id="a"></div><div id="dbg"></div><div id="u"></div>
+<div id="cue"></div><div id="s">Starting...</div><div id="a"></div><div id="dbg"></div><div id="u"></div>
 <div class="row">
 <button id="b">Set display box</button><button id="t">Test connection</button><button id="c">Reset settings</button>
 </div>
@@ -34,10 +35,15 @@ let ROI=JSON.parse(localStorage.roi||'null');            // display box, stored 
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');}
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();localStorage.ep=EP;localStorage.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
-$('u').textContent='Page v8 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
+$('u').textContent='Page v10 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
 
-// tunable: STILL = how steady the display must look (lower = stricter); MIN_MS/MAX_MS = shortest and longest wait before sending
-const STILL=0.12,TICK_MS=200,MIN_MS=1600,MAX_MS=5000;
+// tunable numbers (STILL = how steady the display must look; lower = stricter)
+const STILL=0.12,TICK_MS=200;
+const CHANGE=0.25;        // how different the display must look from the moment the barcode was read, to count as "a package was put down"
+const MIN_MS=1500;        // shortest wait after the barcode before sending
+const FALLBACK_MS=5000;   // display never changed since the barcode: assume the package was already resting on the scale
+const MAX_MS=20000;       // send anyway after this long
+const CUE_WORD='Now weigh';   // spoken when the barcode is read
 const RES={1080:[1920,1080],1440:[2560,1440],2160:[3840,2160]};
 
 /* ---------- sounds: rising chime = good, low double buzz = problem ---------- */
@@ -46,6 +52,9 @@ function tone(f,ms,type,when){if(!AC)return;const o=AC.createOscillator(),g=AC.c
  o.connect(g);g.connect(AC.destination);o.start(AC.currentTime+when);o.stop(AC.currentTime+when+ms/1000);}
 const good=()=>{tone(880,120,'sine',0);tone(1320,200,'sine',.14);};
 const bad=()=>{tone(220,260,'square',0);tone(170,380,'square',.32);};
+function cue(){tone(740,110,'triangle',0);   // short tick, then the spoken word
+ try{if('speechSynthesis' in window){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(CUE_WORD);u.lang='en-US';u.rate=1.2;speechSynthesis.speak(u);}}catch(e){}}
+function showCue(on){const c=$('cue');c.style.display=on?'block':'none';if(on)c.textContent='BARCODE OK - SET IT ON THE SCALE';}
 
 /* ---------- tracking numbers from barcodes and QR codes ---------- */
 function fix(x){return(/^\d{30,34}$/.test(x)&&x.startsWith('420'))?x.slice(-22):x;}
@@ -59,7 +68,7 @@ const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequen
 function jpeg(sx,sy,sw,sh,w,src){src=src||v;const k=w/sw;cv.width=Math.round(w);cv.height=Math.max(1,Math.round(sh*k));
  cx.drawImage(src,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.85).split(',')[1];}
 const vw=()=>v.videoWidth,vh=()=>v.videoHeight;
-const crop=()=>jpeg(ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),400);
+const crop=()=>jpeg(ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),600);
 // close-up of the label area (cut from the full-resolution picture) + a wide view for context
 function labelShots(boxes,src,W,H){
  if(!boxes.length)return[jpeg(0,0,W,H,Math.min(1568,W),src)];
@@ -128,7 +137,7 @@ v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect();
 
 /* ---------- sending and results ---------- */
 const seen=new Set();
-function show(codes,r){const d=document.createElement('div'),id=codes.join(' . ');
+function show(codes,r){const d=document.createElement('div'),id=r.tracking||codes.join(' . ');
  d.textContent=id+'  '+(r.group||r.client||r.label_name||'?')+'  '+(r.weight??'?')+'  '+(r.status||r.error||'')+(typeof r.cost==='number'?'  | '+r.tokens+' tokens, $'+r.cost.toFixed(4)+' (today $'+r.today.toFixed(3)+')':'');
  $('log').prepend(d);
  if(r.status==='OK'){good();return;}
@@ -140,7 +149,7 @@ function showThumbs(labels,snaps){const t=$('th');t.innerHTML='';
 async function post(body){const resp=await fetch(EP,{method:'POST',body}),txt=await resp.text();
  try{return JSON.parse(txt);}
  catch(e){throw new Error('Google sent a web page instead of data: '+txt.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160));}}
-function send(codes,labels,snaps){showThumbs(labels,snaps);const body=JSON.stringify({secret:SECRET,codes,labels,snaps});codes.forEach(c=>seen.add(c));
+function send(codes,labels,snaps,raws){showThumbs(labels,snaps);const body=JSON.stringify({secret:SECRET,codes,labels,snaps,raws:[...raws].slice(0,12).map(x=>String(x).slice(0,300))});codes.forEach(c=>seen.add(c));
  (async function go(n){try{const r=await post(body);if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
  catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
 // one-tap check that the page can reach your Google script and the secret matches
@@ -161,7 +170,7 @@ async function main(){
  if(!('BarcodeDetector' in window)){S.textContent='Use Chrome on Android (no barcode support here)';return;}
  await cam();try{await navigator.wakeLock.request('screen');}catch{}
  const det=new BarcodeDetector();drawBox();
- let st='idle',prev=null,still=0,codes=new Set(),label=null,since=0,snaps=[],lastSnap=0;
+ let st='idle',prev=null,ref=null,still=0,codes=new Set(),allRaws=new Set(),label=null,since=0,snaps=[],lastSnap=0;
  while(true){
   await sleep(TICK_MS);
   if(!ROI){S.textContent='Tap "Set display box" first';prev=null;continue;}
@@ -170,21 +179,23 @@ async function main(){
    for(const t of extract(b.rawValue)){found.push(t);if(!seen.has(t))boxes.push(b.boundingBox);}}}catch{}
   const fresh=found.filter(t=>!seen.has(t));
   const d=prev?diff(cur,prev):0;prev=cur;
-  $('dbg').textContent='display movement '+d.toFixed(2)+' (steady when under '+STILL+')';
   if(st=='idle'){
-   if(fresh.length){st='weigh';since=Date.now();still=0;snaps=[];lastSnap=0;codes=new Set(fresh);label=labelShots(boxes,v,vw(),vh());}
+   $('dbg').textContent='display movement '+d.toFixed(2)+' (steady when under '+STILL+')';
+   if(fresh.length){st='weigh';since=Date.now();still=0;ref=cur;snaps=[];lastSnap=0;codes=new Set(fresh);allRaws=new Set(raws);
+    label=labelShots(boxes,v,vw(),vh());cue();showCue(true);}
    else S.textContent=found.length?'Already scanned: '+found[0]:raws.length?'Barcode seen but not a tracking number: '+raws[0].slice(0,30):'Ready';
   }else{
-   fresh.forEach(t=>codes.add(t));
+   fresh.forEach(t=>codes.add(t));raws.forEach(x=>allRaws.add(x));
    if(fresh.length)label=labelShots(boxes,v,vw(),vh());     // keep the newest sharp frame of the label
    if(Date.now()-lastSnap>=400){snaps.push(crop());snaps=snaps.slice(-3);lastSnap=Date.now();}
    still=d<STILL?still+1:0;
-   const t=Date.now()-since;
-   S.textContent='Weighing '+[...codes].join(' . ');
-   if((t>=MIN_MS&&still>=3)||t>=MAX_MS){
-    S.textContent='Capturing label...';
+   const t=Date.now()-since,chg=diff(cur,ref),changed=chg>CHANGE;
+   $('dbg').textContent='display movement '+d.toFixed(2)+' | change since barcode '+chg.toFixed(2)+' (needs over '+CHANGE+') | '+(t/1000).toFixed(1)+'s';
+   S.textContent='Barcode read: '+[...codes].join(' . ');
+   if((changed&&still>=3&&t>=MIN_MS)||(!changed&&t>=FALLBACK_MS)||t>=MAX_MS){
+    showCue(false);S.textContent='Capturing label...';
     let shots=label;if(PHOTO){const s=await stillShots(det,codes);if(s)shots=s;}
-    send([...codes],shots,snaps);st='idle';S.textContent='Sent - next package';
+    send([...codes],shots,snaps,allRaws);st='idle';S.textContent='Sent - next package';
    }
   }
  }
