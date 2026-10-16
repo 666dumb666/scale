@@ -9,6 +9,7 @@ body{margin:0;background:#15181c;color:#e8ece9;font:16px system-ui,sans-serif}
 #pg{position:relative;margin:8px 12px;height:58px;border-radius:10px;background:#2a2f35;overflow:hidden}
 #pgbar{position:absolute;left:0;top:0;bottom:0;width:0;background:#3a424b;transition:width .15s linear}
 #pgtxt{position:relative;text-align:center;line-height:58px;font-size:19px;font-weight:800;padding:0 8px;white-space:nowrap;overflow:hidden}
+#cf{display:none;margin:8px 12px;padding:10px;border-radius:10px;background:#5a4a00;color:#fff}#cft{font-weight:700;word-break:break-all}
 #s{padding:4px 12px;font-weight:600;font-size:15px;word-break:break-all}
 #a{padding:0 12px;color:#ff8a80;font-weight:700}
 #dbg,#u{padding:2px 12px;font:12px ui-monospace,monospace;color:#7d8a82;word-break:break-all}
@@ -20,9 +21,9 @@ button,select{padding:10px 14px;font-size:15px;max-width:100%}
 </style></head><body>
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
 <div id="pg"><div id="pgbar"></div><div id="pgtxt">Starting...</div></div>
-<div id="s"></div><div id="a"></div><div id="dbg"></div><div id="u"></div>
+<div id="cf"><div id="cft"></div><div class="row"><button id="cfy">Confirm</button><button id="cfn">Leave flagged</button></div></div><div id="s"></div><div id="a"></div><div id="dbg"></div><div id="u"></div>
 <div class="row">
-<button id="b">Set display box</button><button id="z0">Set zero</button><button id="go">Send now</button>
+<button id="b">Set display box</button><button id="z0">Set zero</button><button id="go">Send now</button><button id="man">Use written number</button>
 </div>
 <div class="row">
 <button id="t">Test connection</button><button id="c">Reset settings</button>
@@ -36,20 +37,20 @@ button,select{padding:10px 14px;font-size:15px;max-width:100%}
 <div id="log"></div><div id="th"></div>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),S=$('s');
-let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT,PHOTO=localStorage.photo==='1',forceSend=false;
+let EP=(localStorage.ep||'').trim(),SECRET=(localStorage.secret||'').trim(),pts=null,track=null,aT,PHOTO=localStorage.photo!=='0',forceSend=false,manualReq=false,pendingConfirm=null;
 let ROI=JSON.parse(localStorage.roi||'null'),ZERO=JSON.parse(localStorage.zero||'null');
 if(ROI&&(ROI.x>1||ROI.w>1)){ROI=null;localStorage.removeItem('roi');}
 if(!EP||!SECRET){EP=(prompt('Apps Script web app URL')||'').trim();SECRET=(prompt('Secret word')||'').trim();localStorage.ep=EP;localStorage.secret=SECRET;}
 const URL_OK=/^https:\/\/script\.google\.com\/(a\/macros\/[^\/]+|macros)\/s\/[^\/\s]+\/exec$/.test(EP);
-$('u').textContent='Page v11 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
+$('u').textContent='Page v12 | Script URL saved: '+EP.slice(0,36)+'...'+EP.slice(-10)+' ('+EP.length+' characters)'+(URL_OK?'':' - NOT a valid web app URL: it must start with https://script.google.com/macros/s/ and end with /exec');
 
 /* ---- tunable numbers ---- */
-const STILL=0.12;          // display counts as "not changing" when its movement is under this
 const TICK_MS=200;
-const HOLD_MS=2000;        // weight must be above zero and unchanged this long, then it is captured
-const FORCE_MS=8000;       // display unchanged this long after the barcode but still looks like zero: capture anyway
+const SETTLE_MS=1500;      // weight above zero AND barcode read: wait this long, then take the display pictures (the AI judges whether it is steady)
+const FORCE_MS=8000;       // barcode read but the display still looks like zero for this long: capture anyway
 const MAX_MS=30000;        // capture anyway this long after the barcode
 const ZERO_DIFF=0.18;      // how different the display must look from the empty-scale picture to count as "above zero"
+const NOBARCODE_MS=6000;   // weight sitting on the scale this long with no barcode read: offer "Use written number"
 const RES={1080:[1920,1080],1440:[2560,1440],2160:[3840,2160]};
 
 /* ---- sounds: tick = captured (you can lift it), rising chime = saved OK, low buzz = problem ---- */
@@ -77,12 +78,12 @@ function jpeg(sx,sy,sw,sh,w,src){src=src||v;const k=w/sw;cv.width=Math.round(w);
  cx.drawImage(src,sx,sy,sw,sh,0,0,cv.width,cv.height);return cv.toDataURL('image/jpeg',.85).split(',')[1];}
 const vw=()=>v.videoWidth,vh=()=>v.videoHeight;
 const crop=()=>jpeg(ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),600);
-function labelShots(boxes,src,W,H){
+function labelShots(boxes,src,W,H,hi){
  if(!boxes.length)return[jpeg(0,0,W,H,Math.min(1568,W),src)];
  let x1=1e9,y1=1e9,x2=0,y2=0;
  boxes.forEach(b=>{x1=Math.min(x1,b.x);y1=Math.min(y1,b.y);x2=Math.max(x2,b.x+b.width);y2=Math.max(y2,b.y+b.height);});
- const pad=1.3*Math.max(x2-x1,y2-y1),sx=Math.max(0,x1-pad),sy=Math.max(0,y1-pad),ex=Math.min(W,x2+pad),ey=Math.min(H,y2+pad);
- return[jpeg(sx,sy,ex-sx,ey-sy,Math.min(1568,ex-sx),src),jpeg(0,0,W,H,Math.min(1000,W),src)];}
+ const pad=1.8*Math.max(x2-x1,y2-y1),sx=Math.max(0,x1-pad),sy=Math.max(0,y1-pad),ex=Math.min(W,x2+pad),ey=Math.min(H,y2+pad);
+ return[jpeg(sx,sy,ex-sx,ey-sy,Math.min(1568,ex-sx),src),jpeg(0,0,W,H,Math.min(hi?1400:1000,W),src)];}
 function sig(){const w=48,h=16;cv.width=w;cv.height=h;
  cx.drawImage(v,ROI.x*vw(),ROI.y*vh(),ROI.w*vw(),ROI.h*vh(),0,0,w,h);
  const d=cx.getImageData(0,0,w,h).data,o=[];let m=0;
@@ -101,9 +102,8 @@ async function stillShots(det,codes){
    blob=await withTimeout(ic.takePhoto(o),5000);}
   catch(e){blob=await withTimeout(ic.takePhoto(),5000);}
   const bmp=await createImageBitmap(blob),boxes=[];
-  for(const b of await det.detect(bmp)){if(extract(b.rawValue).some(t=>codes.has(t)))boxes.push(b.boundingBox);}
-  if(!boxes.length)return null;
-  return labelShots(boxes,bmp,bmp.width,bmp.height);
+  if(codes.size)for(const b of await det.detect(bmp)){if(extract(b.rawValue).some(t=>codes.has(t)))boxes.push(b.boundingBox);}
+  return labelShots(boxes,bmp,bmp.width,bmp.height,true);   // no codes found in the photo: the whole photo is still much sharper than the video
  }catch(e){return null;}}
 function paintP(){$('p').textContent='Photo mode: '+(PHOTO?'ON':'off');}
 $('p').onclick=()=>{PHOTO=!PHOTO;localStorage.photo=PHOTO?'1':'0';paintP();};paintP();
@@ -138,6 +138,14 @@ function setZero(){if(!ROI){note('Set the display box first');return;}
  ZERO=sig();localStorage.zero=JSON.stringify(ZERO.map(x=>Math.round(x*100)/100));note('Zero saved: the scale should be empty and showing zero');}
 $('z0').onclick=setZero;
 $('go').onclick=()=>{forceSend=true;};
+$('man').onclick=()=>{manualReq=true;};
+$('cfn').onclick=()=>{pendingConfirm=null;$('cf').style.display='none';};
+$('cfy').onclick=async()=>{if(!pendingConfirm)return;const tr=pendingConfirm;
+ try{const r=await post(JSON.stringify({secret:SECRET,action:'confirm',tracking:tr}));
+  if(r.error){note('Could not confirm: '+r.error,15000);bad();}else{note('Confirmed: '+tr,8000);good();pendingConfirm=null;$('cf').style.display='none';}}
+ catch(e){note('Could not confirm ('+e.message+')',15000);bad();}};
+function askConfirm(r){if(!r.tracking)return;pendingConfirm=r.tracking;
+ $('cft').textContent='CONFIRM? '+r.tracking+' | '+(r.group||'?')+' ('+(r.client||r.label_name||'?')+') | '+(r.weight??'?')+' | '+(r.note||'');$('cf').style.display='block';}
 $('b').onclick=()=>{pts=[];ROI=null;drawBox();S.textContent='Scale EMPTY? Tap top-left, then bottom-right of the scale display';};
 $('c').onclick=()=>{localStorage.clear();location.reload();};
 v.onclick=e=>{if(!pts)return;const r=v.getBoundingClientRect();
@@ -157,13 +165,14 @@ function show(codes,r){const d=document.createElement('div'),id=r.tracking||code
  if(r.status==='OK'){good();return;}
  d.style.color='#ff8a80';
  note('CHECK '+id+': '+(r.error||r.note||r.status),30000);
+ if(r.status==='REVIEW')askConfirm(r);
  bad();}
 async function post(body){const resp=await fetch(EP,{method:'POST',body}),txt=await resp.text();
  try{return JSON.parse(txt);}
  catch(e){throw new Error('Google sent a web page instead of data: '+txt.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160));}}
-function send(codes,labels,snaps,raws){showThumbs(labels,snaps);const body=JSON.stringify({secret:SECRET,codes,labels,snaps,raws:[...raws].slice(0,12).map(x=>String(x).slice(0,300))});codes.forEach(c=>seen.add(c));
- (async function go(n){try{const r=await post(body);if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
- catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
+function send(codes,labels,snaps,raws,hires,manual){showThumbs(labels,snaps);const body=JSON.stringify({secret:SECRET,codes,labels,snaps,hires,manual,raws:[...raws].slice(0,12).map(x=>String(x).slice(0,300))});codes.forEach(c=>seen.add(c));
+ (async function go(n){try{const r=await post(body);if(r.error)codes.forEach(c=>seen.delete(c));show(codes.length?codes:['manual'],r);}
+ catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes.length?codes:['manual'],{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
 $('t').onclick=async()=>{note('Testing...',30000);
  if(!URL_OK){note('The saved URL is not a web app URL (see the grey line below). Tap Reset settings and paste the /exec URL',30000);bad();return;}
  try{const r=await post(JSON.stringify({secret:SECRET,ping:true}));
@@ -174,46 +183,52 @@ $('t').onclick=async()=>{note('Testing...',30000);
    catch(_){m='Cannot reach script.google.com at all: check the URL spelling, the connection, VPN or ad blocker ('+e.message+')';}}
   note(m,30000);bad();}};
 
-/* ---- main loop: a tracking barcode starts a package; the weight is captured once it is above zero and unchanged for 2 s ---- */
+/* ---- main loop: a tracking barcode starts a package; once a weight is on the scale the display pictures are taken after 1.5 s ---- */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
  if(!('BarcodeDetector' in window)){S.textContent='Use Chrome on Android (no barcode support here)';return;}
  await cam();try{await navigator.wakeLock.request('screen');}catch{}
  const det=new BarcodeDetector();drawBox();
- let st='idle',prev=null,lastT=Date.now(),stillMs=0,codes=new Set(),allRaws=new Set(),label=null,since=0,ring=[],lastSnap=0,heldUntil=0;
+ let st='idle',manual=false,codes=new Set(),allRaws=new Set(),label=null,since=0,ring=[],lastSnap=0,heldUntil=0,nzSince=0,nzOn=false;
  while(true){
   await sleep(TICK_MS);
-  const now=Date.now(),dt=now-lastT;lastT=now;
-  if(!ROI){setProg('SET THE DISPLAY BOX FIRST (scale empty)',0,RED);S.textContent='';prev=null;continue;}
-  if(!ZERO){setProg('EMPTY THE SCALE, THEN TAP "SET ZERO"',0,RED);S.textContent='';prev=null;continue;}
+  const now=Date.now();
+  if(!ROI){setProg('SET THE DISPLAY BOX FIRST (scale empty)',0,RED);S.textContent='';continue;}
+  if(!ZERO){setProg('EMPTY THE SCALE, THEN TAP "SET ZERO"',0,RED);S.textContent='';continue;}
   const cur=sig();let found=[],raws=[],boxes=[];
   try{for(const b of await det.detect(v)){raws.push(b.rawValue);
    for(const t of extract(b.rawValue)){found.push(t);if(!seen.has(t))boxes.push(b.boundingBox);}}}catch{}
   const fresh=found.filter(t=>!seen.has(t));
-  const d=prev?diff(cur,prev):0;prev=cur;
-  stillMs=d<STILL?stillMs+dt:0;
-  const dz=diff(cur,ZERO),nz=dz>ZERO_DIFF;
+  const dz=diff(cur,ZERO);
+  if(!nzOn&&dz>ZERO_DIFF)nzOn=true;else if(nzOn&&dz<ZERO_DIFF*0.6)nzOn=false;   // hysteresis: no flapping near the threshold
+  const nz=nzOn;
+  nzSince=nz?(nzSince||now):0;
   if(now-lastSnap>=400){ring.push(crop());ring=ring.slice(-3);lastSnap=now;}   // always keep the 3 latest pictures of the display
-  if(st=='idle'&&fresh.length){st='weigh';since=now;codes=new Set(fresh);allRaws=new Set(raws);label=labelShots(boxes,v,vw(),vh());forceSend=false;}
-  else if(st=='weigh'){fresh.forEach(t=>codes.add(t));raws.forEach(x=>allRaws.add(x));if(fresh.length)label=labelShots(boxes,v,vw(),vh());}
+  if(st=='idle'&&fresh.length){st='weigh';manual=false;since=now;codes=new Set(fresh);allRaws=new Set(raws);label=labelShots(boxes,v,vw(),vh(),false);forceSend=false;manualReq=false;}
+  else if(st=='idle'&&manualReq){st='weigh';manual=true;manualReq=false;since=now;codes=new Set();allRaws=new Set(raws);label=labelShots([],v,vw(),vh(),false);forceSend=false;}
+  else if(st=='weigh'){fresh.forEach(t=>codes.add(t));raws.forEach(x=>allRaws.add(x));if(fresh.length)label=labelShots(boxes,v,vw(),vh(),false);}
+  $('dbg').textContent='display vs empty scale: '+dz.toFixed(2)+' ('+(nz?'ABOVE ZERO':'zero')+', needs over '+ZERO_DIFF+')';
   if(st=='idle'){
    S.textContent=found.length?'Already scanned: '+found[0]:raws.length?'Barcode seen but not a tracking number: '+raws[0].slice(0,30):'';
-   $('dbg').textContent='display movement '+d.toFixed(2)+' | vs zero '+dz.toFixed(2)+' (above zero when over '+ZERO_DIFF+')';
-   if(now>heldUntil)setProg('READY - show the barcode',0,GREY);
-   if(forceSend){forceSend=false;note('No barcode read yet');}
+   if(now>heldUntil){
+    if(nz&&!found.length&&now-nzSince>=NOBARCODE_MS)setProg('NO BARCODE READ - tap "Use written number"',0,AMBER);
+    else setProg('READY - show the barcode',0,GREY);}
+   if(forceSend){forceSend=false;note('No barcode read yet - use "Use written number"');}
   }else{
-   const t=now-since;
-   S.textContent='Barcode read: '+[...codes].join(' . ');
-   $('dbg').textContent='movement '+d.toFixed(2)+' | vs zero '+dz.toFixed(2)+' (above zero when over '+ZERO_DIFF+') | steady '+(stillMs/1000).toFixed(1)+'s | '+(t/1000).toFixed(0)+'s since barcode';
-   const go=(stillMs>=HOLD_MS&&nz)||forceSend||Math.min(stillMs,t)>=FORCE_MS||t>=MAX_MS;
+   const t=now-since,settle=nz?now-Math.max(nzSince,since):0;
+   S.textContent=manual?'Using the written number (no barcode)':'Barcode read: '+[...codes].join(' . ');
+   const go=settle>=SETTLE_MS||forceSend||t>=FORCE_MS&&!nz||t>=MAX_MS;
    if(!go){
     if(!nz)setProg('BARCODE OK - waiting for a weight on the scale',0,AMBER);
-    else if(stillMs>0)setProg('HOLD STILL... '+Math.max(0,(HOLD_MS-stillMs)/1000).toFixed(1)+'s',stillMs/HOLD_MS*100,GREEN);
-    else setProg('Weight changing...',0,AMBER);
+    else setProg('WEIGHT ON SCALE - reading in '+Math.max(0,(SETTLE_MS-settle)/1000).toFixed(1)+'s',settle/SETTLE_MS*100,GREEN);
    }else{
-    forceSend=false;ready();setProg('CAPTURED - you can lift it',100,GREEN);heldUntil=now+2500;
-    let shots=label;if(PHOTO){const s=await stillShots(det,codes);if(s)shots=s;}
-    send([...codes],shots,ring.slice(),allRaws);st='idle';S.textContent='Saving...';
+    forceSend=false;
+    const snaps=ring.slice(),rawsCopy=new Set(allRaws),codesCopy=new Set(codes);
+    setProg('TAKING THE LABEL PICTURE - keep it still',100,AMBER);
+    let shots=label,hires=false;
+    if(PHOTO){const s=await stillShots(det,codesCopy);if(s){shots=s;hires=true;}}
+    ready();setProg('CAPTURED - you can lift it',100,GREEN);heldUntil=Date.now()+2500;
+    send([...codesCopy],shots,snaps,rawsCopy,hires,manual);st='idle';S.textContent='Saving...';
    }
   }
  }
