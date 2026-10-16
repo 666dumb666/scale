@@ -17,7 +17,7 @@ button,select{padding:10px 14px;font-size:15px}
 <div id="wrap"><video id="v" playsinline muted></video><div id="box"></div></div>
 <div id="s">Starting...</div><div id="a"></div><div id="dbg"></div>
 <div class="row">
-<button id="b">Set display box</button><button id="c">Reset settings</button>
+<button id="b">Set display box</button><button id="t">Test connection</button><button id="c">Reset settings</button>
 <select id="res"><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option></select>
 <label id="zw">Zoom <input id="z" type="range"></label>
 </div>
@@ -98,8 +98,14 @@ function show(codes,r){const d=document.createElement('div'),id=codes[0].slice(-
  $('a').textContent='CHECK '+id+': '+(r.error||r.note||r.status);
  bad();clearTimeout(aT);aT=setTimeout(()=>$('a').textContent='',20000);}
 function send(codes,label,snaps){const body=JSON.stringify({secret:SECRET,codes,label,snaps});codes.forEach(c=>seen.add(c));
- (async function go(n){try{show(codes,await(await fetch(EP,{method:'POST',body})).json());}
- catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else show(codes,{error:'SEND FAILED - enter by hand'});}})(0);}
+ (async function go(n){try{const r=await(await fetch(EP,{method:'POST',body})).json();if(r.error)codes.forEach(c=>seen.delete(c));show(codes,r);}
+ catch(e){if(n<3)setTimeout(()=>go(n+1),3000);else{codes.forEach(c=>seen.delete(c));show(codes,{error:'SEND FAILED ('+e.message+') - scan it again'});}}})(0);}
+// one-tap check that the page can reach your Google script and the secret matches
+$('t').onclick=async()=>{const a=$('a');a.textContent='Testing...';
+ try{const r=await(await fetch(EP,{method:'POST',body:JSON.stringify({secret:SECRET,ping:true})})).json();
+  if(r.error){a.textContent='Script reached, but: '+r.error;bad();}else{a.textContent='Connected OK - URL and secret are correct';good();}}
+ catch(e){a.textContent='Cannot reach the script ('+e.message+') - check the URL and that access is set to Anyone';bad();}
+ clearTimeout(aT);aT=setTimeout(()=>a.textContent='',20000);};
 
 /* ---------- main loop: a new tracking barcode starts a package; no buttons needed ---------- */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
